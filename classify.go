@@ -119,7 +119,7 @@ func classifyProbe(input classifyInput) classifyResult {
 		"invalid_grant",
 		"unauthorized",
 	) {
-		return classifyResult{Classification: "reauth", Action: "reauth", Reason: "认证已过期或失效"}
+		return classifyResult{Classification: "reauth", Action: "delete", Reason: "认证已过期或失效"}
 	}
 	if status == http.StatusTooManyRequests || containsAny(blob,
 		"free-usage-exhausted",

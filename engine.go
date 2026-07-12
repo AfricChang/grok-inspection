@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +20,7 @@ import (
 type accountResult struct {
 	AuthIndex      string `json:"auth_index"`
 	Name           string `json:"name"`
+	FileName       string `json:"file_name,omitempty"`
 	Email          string `json:"email,omitempty"`
 	Disabled       bool   `json:"disabled"`
 	Classification string `json:"classification"`
@@ -28,21 +33,21 @@ type accountResult struct {
 }
 
 type jobSnapshot struct {
-	Running          bool            `json:"running"`
-	Stopped          bool            `json:"stopped"`
-	Applying         bool            `json:"applying"`
-	Done             int             `json:"done"`
-	Total            int             `json:"total"`
-	Workers          int             `json:"workers"`
-	IncludeDisabled  bool            `json:"include_disabled"`
-	OnlyDisabled     bool            `json:"only_disabled"`
-	ApplyDone        int             `json:"apply_done"`
-	ApplyTotal       int             `json:"apply_total"`
-	ApplyCurrent     string          `json:"apply_current,omitempty"`
-	StartedAt        string          `json:"started_at,omitempty"`
-	FinishedAt       string          `json:"finished_at,omitempty"`
-	Results          []accountResult `json:"results"`
-	Summary          map[string]int  `json:"summary"`
+	Running         bool            `json:"running"`
+	Stopped         bool            `json:"stopped"`
+	Applying        bool            `json:"applying"`
+	Done            int             `json:"done"`
+	Total           int             `json:"total"`
+	Workers         int             `json:"workers"`
+	IncludeDisabled bool            `json:"include_disabled"`
+	OnlyDisabled    bool            `json:"only_disabled"`
+	ApplyDone       int             `json:"apply_done"`
+	ApplyTotal      int             `json:"apply_total"`
+	ApplyCurrent    string          `json:"apply_current,omitempty"`
+	StartedAt       string          `json:"started_at,omitempty"`
+	FinishedAt      string          `json:"finished_at,omitempty"`
+	Results         []accountResult `json:"results"`
+	Summary         map[string]int  `json:"summary"`
 }
 
 type startRequest struct {
@@ -60,6 +65,7 @@ type actionRequest struct {
 	AuthIndex string `json:"auth_index"`
 	Name      string `json:"name"`
 	Disabled  bool   `json:"disabled"`
+	Delete    bool   `json:"delete"`
 }
 
 type authListResponse struct {
@@ -280,6 +286,7 @@ func inspectAccount(file pluginapi.HostAuthFileEntry) accountResult {
 	base := accountResult{
 		AuthIndex: file.AuthIndex,
 		Name:      name,
+		FileName:  file.Name,
 		Email:     file.Email,
 		Disabled:  file.Disabled || isDisabledEntry(file.Disabled, file.Status),
 	}
@@ -431,7 +438,7 @@ func callHostAuthList() (authListResponse, error) {
 	return resp, nil
 }
 
-func setAuthDisabled(name string, disabled bool) error {
+func setAuthDisabledLegacy(name string, disabled bool) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("name is required")
@@ -508,6 +515,150 @@ func setAuthDisabled(name string, disabled bool) error {
 	return nil
 }
 
+var (
+	cpaManagementBaseURL = "http://127.0.0.1:8317"
+	cpaManagementDo      = http.DefaultClient.Do
+)
+
+func cpaManagementPassword() string {
+	return firstNonEmpty(os.Getenv("MANAGEMENT_PASSWORD"), os.Getenv("CPA_MANAGEMENT_KEY"))
+}
+
+func callCPAManagement(method, path string, body []byte) (int, []byte, error) {
+	password := strings.TrimSpace(cpaManagementPassword())
+	if password == "" {
+		return 0, nil, fmt.Errorf("CPA management password is unavailable")
+	}
+	req, errRequest := http.NewRequest(method, strings.TrimRight(cpaManagementBaseURL, "/")+path, bytes.NewReader(body))
+	if errRequest != nil {
+		return 0, nil, errRequest
+	}
+	req.Header.Set("Authorization", "Bearer "+password)
+	req.Header.Set("Accept", "application/json")
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, errDo := cpaManagementDo(req)
+	if errDo != nil {
+		return 0, nil, errDo
+	}
+	defer resp.Body.Close()
+	raw, errRead := io.ReadAll(resp.Body)
+	if errRead != nil {
+		return resp.StatusCode, nil, errRead
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.StatusCode, raw, fmt.Errorf("CPA management API returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return resp.StatusCode, raw, nil
+}
+
+func findAuthFile(name string) (*pluginapi.HostAuthFileEntry, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	list, errList := callHostAuthList()
+	if errList != nil {
+		return nil, errList
+	}
+	for i := range list.Files {
+		file := &list.Files[i]
+		if file.Name == name || file.ID == name || file.AuthIndex == name || file.Email == name {
+			return file, nil
+		}
+	}
+	return nil, fmt.Errorf("auth not found: %s", name)
+}
+
+func verifyAuthDisabled(authIndex, name string, disabled bool) error {
+	list, errList := callHostAuthList()
+	if errList != nil {
+		return errList
+	}
+	for _, file := range list.Files {
+		if file.AuthIndex == authIndex || file.Name == name || file.ID == name || file.Email == name {
+			actual := file.Disabled || isDisabledEntry(file.Disabled, file.Status)
+			if actual != disabled {
+				return fmt.Errorf("CPA state verification failed for %s: disabled=%v, expected=%v", name, actual, disabled)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("auth disappeared while verifying %s", name)
+}
+
+func setAuthDisabled(name string, disabled bool) error {
+	target, errTarget := findAuthFile(name)
+	if errTarget != nil {
+		return errTarget
+	}
+	if strings.TrimSpace(target.Name) == "" {
+		return fmt.Errorf("auth file name missing for %s", name)
+	}
+	body, errMarshal := json.Marshal(map[string]any{
+		"name":     target.Name,
+		"disabled": disabled,
+	})
+	if errMarshal != nil {
+		return errMarshal
+	}
+	if _, _, errPatch := callCPAManagement(http.MethodPatch, "/v0/management/auth-files/status", body); errPatch != nil {
+		return errPatch
+	}
+	if errVerify := verifyAuthDisabled(target.AuthIndex, target.Name, disabled); errVerify != nil {
+		return errVerify
+	}
+	engine.mu.Lock()
+	for i := range engine.results {
+		item := &engine.results[i]
+		if item.AuthIndex == target.AuthIndex || item.FileName == target.Name || item.Name == name {
+			item.Disabled = disabled
+			if disabled && item.Action == "disable" {
+				item.Action = "keep"
+			}
+			if !disabled && item.Action == "enable" {
+				item.Action = "keep"
+			}
+			if disabled && item.Classification == "healthy" {
+				item.Action = "enable"
+			}
+		}
+	}
+	engine.mu.Unlock()
+	return nil
+}
+
+func deleteAuthFile(name string) error {
+	target, errTarget := findAuthFile(name)
+	if errTarget != nil {
+		return errTarget
+	}
+	path := "/v0/management/auth-files?name=" + url.QueryEscape(target.Name)
+	if _, _, errDelete := callCPAManagement(http.MethodDelete, path, nil); errDelete != nil {
+		return errDelete
+	}
+	list, errList := callHostAuthList()
+	if errList != nil {
+		return errList
+	}
+	for _, file := range list.Files {
+		if file.AuthIndex == target.AuthIndex || file.Name == target.Name || file.ID == target.ID {
+			return fmt.Errorf("CPA state verification failed: deleted auth still present as %s", file.Name)
+		}
+	}
+	engine.mu.Lock()
+	for i := range engine.results {
+		item := &engine.results[i]
+		if item.AuthIndex == target.AuthIndex || item.FileName == target.Name {
+			item.Action = "keep"
+			item.Reason = "已删除"
+		}
+	}
+	engine.mu.Unlock()
+	return nil
+}
+
 func (e *inspectionEngine) applyRecommendations(indexes []string) (map[string]any, error) {
 	e.mu.Lock()
 	if e.running || e.applying {
@@ -523,7 +674,7 @@ func (e *inspectionEngine) applyRecommendations(indexes []string) (map[string]an
 		}
 	}
 	for _, item := range e.results {
-		if item.Action != "disable" && item.Action != "enable" {
+		if item.Action != "disable" && item.Action != "enable" && item.Action != "delete" {
 			continue
 		}
 		if len(indexSet) > 0 {
@@ -558,9 +709,15 @@ func (e *inspectionEngine) applyRecommendations(indexes []string) (map[string]an
 		e.mu.Lock()
 		e.applyCurrent = item.Action + " " + item.Name
 		e.mu.Unlock()
-		disabled := item.Action == "disable"
-		if err := setAuthDisabled(firstNonEmpty(item.Name, item.AuthIndex), disabled); err != nil {
-			failures = append(failures, item.Name+": "+err.Error())
+		targetName := firstNonEmpty(item.FileName, item.AuthIndex, item.Name)
+		var errAction error
+		if item.Action == "delete" {
+			errAction = deleteAuthFile(targetName)
+		} else {
+			errAction = setAuthDisabled(targetName, item.Action == "disable")
+		}
+		if errAction != nil {
+			failures = append(failures, item.Name+": "+errAction.Error())
 		} else {
 			success++
 		}

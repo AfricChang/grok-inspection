@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"testing"
 )
 
@@ -12,6 +13,16 @@ func TestClassifyPermissionDenied(t *testing.T) {
 		Disabled:   false,
 	})
 	if got.Classification != "permission_denied" || got.Action != "disable" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestClassifyReauthRecommendsDelete(t *testing.T) {
+	got := classifyProbe(classifyInput{
+		ChatStatus: http.StatusUnauthorized,
+		ChatError:  "Invalid or expired credentials",
+	})
+	if got.Classification != "reauth" || got.Action != "delete" {
 		t.Fatalf("got %+v", got)
 	}
 }

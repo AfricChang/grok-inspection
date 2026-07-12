@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	pluginName          = "grok-inspection"
-	pluginVersion       = "0.1.0"
-	resourceContentType = "text/html; charset=utf-8"
-	jsonContentType     = "application/json; charset=utf-8"
+	pluginName            = "grok-inspection"
+	pluginVersion         = "0.1.1"
+	resourceContentType   = "text/html; charset=utf-8"
+	jsonContentType       = "application/json; charset=utf-8"
 	managementRoutePrefix = "/plugins/" + pluginName
 )
 
@@ -47,8 +47,8 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             pluginName,
 			Version:          pluginVersion,
-			Author:           "Community",
-			GitHubRepository: "https://github.com/ywddd/grok-inspection",
+			Author:           "local",
+			GitHubRepository: "https://github.com/router-for-me/CLIProxyAPI",
 			ConfigFields:     []pluginapi.ConfigField{},
 		},
 		Capabilities: registrationCapabilities{ManagementAPI: true},
@@ -128,8 +128,14 @@ func dispatchManagement(req pluginapi.ManagementRequest) pluginapi.ManagementRes
 		if name == "" {
 			return jsonResponse(http.StatusBadRequest, map[string]any{"error": "name or auth_index required"})
 		}
-		if err := setAuthDisabled(name, body.Disabled); err != nil {
-			return jsonResponse(http.StatusBadRequest, map[string]any{"error": err.Error()})
+		var errAction error
+		if body.Delete {
+			errAction = deleteAuthFile(name)
+		} else {
+			errAction = setAuthDisabled(name, body.Disabled)
+		}
+		if errAction != nil {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"error": errAction.Error()})
 		}
 		return jsonResponse(http.StatusOK, map[string]any{"ok": true})
 	default:

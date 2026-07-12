@@ -123,7 +123,7 @@ func renderUIPage(pluginID string) []byte {
     healthy: '健康', permission_denied: '权限被拒', quota_exhausted: '额度用尽',
     reauth: '需重新登录', model_unavailable: '模型不可用', probe_error: '探测异常', unknown: '未知'
   };
-  const actionLabel = { keep: '保留', disable: '禁用', enable: '启用', reauth: '重新登录' };
+  const actionLabel = { keep: '保留', disable: '禁用', enable: '启用', delete: '删除' };
   const color = {
     healthy: '#047857', permission_denied: '#b45309', quota_exhausted: '#b45309',
     reauth: '#b91c1c', model_unavailable: '#475569', probe_error: '#b91c1c', unknown: '#475569'
@@ -183,7 +183,7 @@ func renderUIPage(pluginID string) []byte {
     } else {
       $('empty').style.display = 'none';
       tbody.innerHTML = pageRows.map((r) => {
-        const actionable = !snap.applying && (r.action === 'disable' || r.action === 'enable');
+        const actionable = !snap.applying && (r.action === 'disable' || r.action === 'enable' || r.action === 'delete');
         const actionBtn = actionable
           ? '<button data-act="' + r.action + '" data-name="' + escapeHtml(r.name) + '" data-index="' + escapeHtml(r.auth_index || '') + '">' + actionLabel[r.action] + '</button>'
           : '-';
@@ -203,7 +203,8 @@ func renderUIPage(pluginID string) []byte {
           await api('/action', { method: 'POST', body: JSON.stringify({
             auth_index: btn.dataset.index,
             name: btn.dataset.name,
-            disabled: btn.dataset.act === 'disable'
+            disabled: btn.dataset.act === 'disable',
+            delete: btn.dataset.act === 'delete'
           })});
           await refresh();
         } catch (e) { $('error').textContent = String(e.message || e); }
@@ -231,7 +232,7 @@ func renderUIPage(pluginID string) []byte {
 
     $('runBtn').disabled = !!(snap.running || snap.applying);
     $('stopBtn').disabled = !snap.running;
-    const actionCount = (snap.results || []).filter((r) => r.action === 'disable' || r.action === 'enable').length;
+    const actionCount = (snap.results || []).filter((r) => r.action === 'disable' || r.action === 'enable' || r.action === 'delete').length;
     $('applyBtn').disabled = !!(snap.running || snap.applying || actionCount === 0);
     $('applyBtn').textContent = snap.applying
       ? ('执行中 ' + (snap.apply_done||0) + '/' + (snap.apply_total||0))
