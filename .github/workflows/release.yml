@@ -119,6 +119,24 @@ jobs:
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout release notes
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Resolve release notes
+        id: notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          notes_file=".github/release-notes/${RELEASE_TAG}.md"
+          if [[ ! -s "${notes_file}" ]]; then
+            echo "missing release notes: ${notes_file}" >&2
+            exit 1
+          fi
+          echo "file=${notes_file}" >> "$GITHUB_OUTPUT"
+
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
@@ -138,13 +156,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_NOTES_FILE: ${{ steps.notes.outputs.file }}
         run: |
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "Grok Inspection ${RELEASE_TAG}" \
+              --notes-file "${RELEASE_NOTES_FILE}"
             gh release upload "${RELEASE_TAG}" assets/*.zip assets/checksums.txt --clobber
           else
             gh release create "${RELEASE_TAG}" \
               --title "Grok Inspection ${RELEASE_TAG}" \
-              --generate-notes \
+              --notes-file "${RELEASE_NOTES_FILE}" \
               assets/*.zip \
               assets/checksums.txt
           fi
