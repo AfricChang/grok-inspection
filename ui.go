@@ -47,11 +47,86 @@ func renderUIPage(pluginID string) []byte {
     .err { color:#b91c1c; white-space:pre-wrap; }
     .key-row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; width:100%%; }
     .key-row input { width:min(360px,100%%); height:34px; border:1px solid #cbd5e1; border-radius:8px; padding:0 10px; }
-    @media (max-width:760px){ .summary{ grid-template-columns:repeat(2,minmax(130px,1fr)); } }
+    :root {
+      color-scheme: light;
+      --page-bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-muted: #fbfdff;
+      --surface-subtle: #f8fafc;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --border-subtle: #f1f5f9;
+      --input-border: #cbd5e1;
+    }
+    html, body { min-width:0; background:var(--page-bg) !important; color:var(--text) !important; }
+    .grok-inspection-page { min-width:0; color:var(--text) !important; }
+    .grok-inspection-page .sub,
+    .grok-inspection-page .progress,
+    .grok-inspection-page .card .k { color:var(--muted) !important; }
+    .grok-inspection-page .ctl,
+    .grok-inspection-page button,
+    .grok-inspection-page .card,
+    .grok-inspection-page .table-wrap { color:var(--text) !important; background:var(--surface) !important; border-color:var(--border) !important; }
+    .grok-inspection-page button.primary { background:#2563eb !important; border-color:#2563eb !important; color:#fff !important; }
+    .grok-inspection-page button.soft { background:#eef2ff !important; border-color:#c7d2fe !important; color:#3730a3 !important; }
+    .grok-inspection-page input[type=number],
+    .grok-inspection-page .key-row input { color:var(--text) !important; background:var(--surface) !important; border-color:var(--input-border) !important; }
+    .grok-inspection-page th { background:var(--surface-subtle) !important; color:var(--muted) !important; border-color:var(--border) !important; }
+    .grok-inspection-page td { border-color:var(--border-subtle) !important; }
+    .grok-inspection-page .pager { background:var(--surface-muted) !important; border-color:var(--border) !important; }
+    .grok-inspection-page .empty { color:var(--muted) !important; }
+    .grok-inspection-page .settings-row,
+    .grok-inspection-page .actions-row { display:flex; gap:8px; flex-wrap:wrap; width:100%%; }
+    .grok-inspection-page .settings-row > .ctl,
+    .grok-inspection-page .actions-row > button { min-width:0; }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --page-bg: #111827;
+        --surface: #182131;
+        --surface-muted: #151d2b;
+        --surface-subtle: #1d2737;
+        --text: #f8fafc;
+        --muted: #a7b3c7;
+        --border: #334155;
+        --border-subtle: #273449;
+        --input-border: #475569;
+      }
+      .grok-inspection-page button.soft { background:#242c58 !important; border-color:#4b5aa6 !important; color:#dbe4ff !important; }
+      .grok-inspection-page .badge { background:#252b63 !important; color:#c7d2fe !important; }
+      .grok-inspection-page .card.active { outline-color:#60a5fa !important; }
+    }
+    @media (max-width:760px){
+      body { overflow-x:hidden !important; }
+      .grok-inspection-page { padding:14px 12px calc(24px + env(safe-area-inset-bottom)); }
+      .grok-inspection-page .hero { display:block; }
+      .grok-inspection-page h1 { font-size:24px; line-height:30px; }
+      .grok-inspection-page .controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; width:100%%; }
+      .grok-inspection-page .key-row { grid-column:1 / -1; grid-row:1; width:100%%; }
+      .grok-inspection-page .key-row input { width:100%%; min-width:0; height:42px; font-size:16px; }
+      .grok-inspection-page .controls > label { width:100%%; min-width:0; padding:0 8px; }
+      .grok-inspection-page .controls > label:first-of-type { grid-column:1 / -1; grid-row:2; }
+      .grok-inspection-page .controls > label:nth-of-type(2) { grid-column:1; grid-row:3; }
+      .grok-inspection-page .controls > label:nth-of-type(3) { grid-column:2; grid-row:3; }
+      .grok-inspection-page input[type=number] { flex:1; width:100%%; min-width:0; }
+      .grok-inspection-page .controls > #stopBtn { grid-column:1; grid-row:4; width:100%%; min-width:0; padding:0 8px; white-space:nowrap; }
+      .grok-inspection-page .controls > #runBtn { grid-column:2; grid-row:4; width:100%%; min-width:0; padding:0 8px; white-space:nowrap; }
+      .grok-inspection-page .controls > #applyBtn { grid-column:1 / -1; grid-row:5; width:100%%; min-width:0; padding:0 8px; white-space:nowrap; }
+      .grok-inspection-page .summary { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+      .grok-inspection-page .card { min-width:0; padding:10px; }
+      .grok-inspection-page .card .v { font-size:26px; }
+      .grok-inspection-page .bar { display:block; }
+      .grok-inspection-page .filters { margin-top:8px; overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; scrollbar-width:thin; }
+      .grok-inspection-page .filters button { flex:0 0 auto; }
+      .grok-inspection-page .pager { align-items:stretch; }
+      .grok-inspection-page .pager > div { width:100%%; }
+      .grok-inspection-page .pager > div:last-child { justify-content:space-between; }
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
+  <div class="wrap grok-inspection-page">
     <div class="hero">
       <div>
         <div class="badge">xAI / Grok · CPA Plugin</div>

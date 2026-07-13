@@ -41,3 +41,20 @@ func TestResourcePageDoesNotPollWithoutManagementKey(t *testing.T) {
 		t.Fatalf("refresh must guard management requests with %q", guard)
 	}
 }
+
+func TestResourcePageHasMobileScopedDarkModeStyles(t *testing.T) {
+	page := string(renderUIPage(pluginName))
+	required := []string{
+		`class="wrap grok-inspection-page"`,
+		`.grok-inspection-page`,
+		`@media (max-width:760px)`,
+		`@media (prefers-color-scheme: dark)`,
+		`overflow-x:auto`,
+		`min-width:0`,
+	}
+	for _, marker := range required {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("resource page missing mobile/dark-mode marker %q", marker)
+		}
+	}
+}
