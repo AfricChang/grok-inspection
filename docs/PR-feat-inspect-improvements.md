@@ -2,7 +2,7 @@
 
 > Branch: `feat/inspect-improvements`  
 > Base: `ywddd/grok-inspection` `main`（`7a09872`）  
-> Plugin version: **0.1.10**
+> Plugin version: **0.1.13**
 
 ---
 
