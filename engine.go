@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -571,29 +570,14 @@ func resolveManagementPassword(headers http.Header) string {
 }
 
 func resolveManagementBaseURL(headers http.Header) string {
+	_ = headers
+	// Prefer explicit env. Never derive the management port from the browser Host
+	// header: external reverse proxies (e.g. :1109) are not the CPA listen port.
 	if value := firstNonEmpty(os.Getenv("CPA_BASE_URL"), os.Getenv("CPA_MANAGEMENT_BASE_URL")); value != "" {
 		return strings.TrimRight(strings.TrimSpace(value), "/")
 	}
-	host := ""
-	if headers != nil {
-		host = strings.TrimSpace(headers.Get("X-Forwarded-Host"))
-		if host == "" {
-			host = strings.TrimSpace(headers.Get("Host"))
-		}
-		if host == "" {
-			for key, values := range headers {
-				if strings.EqualFold(strings.TrimSpace(key), "Host") && len(values) > 0 {
-					host = strings.TrimSpace(values[0])
-					break
-				}
-			}
-		}
-	}
-	if host != "" {
-		// Always call the local CPA process; reuse the inbound management port when available.
-		if _, port, err := net.SplitHostPort(host); err == nil && port != "" {
-			return "http://127.0.0.1:" + port
-		}
+	if port := strings.TrimSpace(firstNonEmpty(os.Getenv("PORT"), os.Getenv("CPA_PORT"))); port != "" {
+		return "http://127.0.0.1:" + port
 	}
 	return strings.TrimRight(cpaManagementBaseURL, "/")
 }
@@ -714,10 +698,29 @@ func setAuthDisabled(name string, disabled bool, password string, headers http.H
 func deleteAuthFile(name string, password string, headers http.Header) error {
 	target, errTarget := findAuthFile(name)
 	if errTarget != nil {
+		// Idempotent: already gone counts as success for delete recommendations.
+		if strings.Contains(errTarget.Error(), "auth not found") {
+			removeResultByIdentity(name, "", "")
+			return nil
+		}
 		return errTarget
 	}
 	path := "/v0/management/auth-files?name=" + url.QueryEscape(target.Name)
 	if _, _, errDelete := callCPAManagementWithAuth(http.MethodDelete, path, nil, password, headers); errDelete != nil {
+		// Some CPA builds return 404 after concurrent deletes; re-check presence.
+		if list, errList := callHostAuthList(); errList == nil {
+			gone := true
+			for _, file := range list.Files {
+				if file.AuthIndex == target.AuthIndex || file.Name == target.Name || file.ID == target.ID {
+					gone = false
+					break
+				}
+			}
+			if gone {
+				removeResultByIdentity(target.Name, target.AuthIndex, target.ID)
+				return nil
+			}
+		}
 		return errDelete
 	}
 	list, errList := callHostAuthList()
@@ -729,16 +732,33 @@ func deleteAuthFile(name string, password string, headers http.Header) error {
 			return fmt.Errorf("CPA state verification failed: deleted auth still present as %s", file.Name)
 		}
 	}
-	engine.mu.Lock()
-	for i := range engine.results {
-		item := &engine.results[i]
-		if item.AuthIndex == target.AuthIndex || item.FileName == target.Name {
-			item.Action = "keep"
-			item.Reason = "已删除"
-		}
-	}
-	engine.mu.Unlock()
+	removeResultByIdentity(target.Name, target.AuthIndex, target.ID)
 	return nil
+}
+
+func removeResultByIdentity(name, authIndex, id string) {
+	name = strings.TrimSpace(name)
+	authIndex = strings.TrimSpace(authIndex)
+	id = strings.TrimSpace(id)
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if len(engine.results) == 0 {
+		return
+	}
+	filtered := make([]accountResult, 0, len(engine.results))
+	for _, item := range engine.results {
+		if authIndex != "" && item.AuthIndex == authIndex {
+			continue
+		}
+		if name != "" && (item.FileName == name || item.Name == name || item.Email == name) {
+			continue
+		}
+		if id != "" && (item.FileName == id || item.AuthIndex == id) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	engine.results = filtered
 }
 
 func (e *inspectionEngine) applyRecommendations(indexes []string, password string, headers http.Header) (map[string]any, error) {

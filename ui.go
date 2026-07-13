@@ -403,8 +403,19 @@ func renderUIPage(pluginID string) []byte {
     catch (e) { $('error').textContent = String(e.message || e); }
   };
   $('applyBtn').onclick = async () => {
-    if (!confirm('确认执行当前建议的禁用/启用操作？')) return;
-    try { await api('/apply', { method: 'POST', body: '{}' }); await refresh(); }
+    if (!confirm('确认执行当前建议的禁用/启用/删除操作？')) return;
+    try {
+      const result = await api('/apply', { method: 'POST', body: '{}' });
+      const success = Number(result && result.success || 0);
+      const failed = Number(result && result.failed || 0);
+      if (failed > 0) {
+        const details = Array.isArray(result.failures) ? result.failures.slice(0, 5).join('；') : '';
+        $('error').textContent = '建议操作完成：成功 ' + success + '，失败 ' + failed + (details ? ('。示例：' + details) : '');
+      } else {
+        $('error').textContent = success ? ('建议操作完成：成功 ' + success + ' 项') : '';
+      }
+      await refresh();
+    }
     catch (e) { $('error').textContent = String(e.message || e); }
   };
   wireExclusive();

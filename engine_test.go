@@ -92,18 +92,32 @@ func TestCallCPAManagementWithAuthUsesRequestPasswordWithoutEnv(t *testing.T) {
 	}
 }
 
-func TestResolveManagementBaseURLUsesRequestPort(t *testing.T) {
+func TestResolveManagementBaseURLIgnoresRequestHostPort(t *testing.T) {
 	oldBase := os.Getenv("CPA_BASE_URL")
 	oldMgmt := os.Getenv("CPA_MANAGEMENT_BASE_URL")
+	oldPort := os.Getenv("PORT")
+	oldCPAPort := os.Getenv("CPA_PORT")
+	oldDefault := cpaManagementBaseURL
 	defer func() {
 		_ = os.Setenv("CPA_BASE_URL", oldBase)
 		_ = os.Setenv("CPA_MANAGEMENT_BASE_URL", oldMgmt)
+		_ = os.Setenv("PORT", oldPort)
+		_ = os.Setenv("CPA_PORT", oldCPAPort)
+		cpaManagementBaseURL = oldDefault
 	}()
 	_ = os.Unsetenv("CPA_BASE_URL")
 	_ = os.Unsetenv("CPA_MANAGEMENT_BASE_URL")
+	_ = os.Unsetenv("PORT")
+	_ = os.Unsetenv("CPA_PORT")
+	cpaManagementBaseURL = "http://127.0.0.1:8317"
 
-	headers := http.Header{"Host": []string{"192.168.1.4:18317"}}
-	if got := resolveManagementBaseURL(headers); got != "http://127.0.0.1:18317" {
-		t.Fatalf("base url = %q", got)
+	headers := http.Header{"Host": []string{"cpa.example.com:1109"}}
+	if got := resolveManagementBaseURL(headers); got != "http://127.0.0.1:8317" {
+		t.Fatalf("base url = %q, want default local management port", got)
+	}
+
+	_ = os.Setenv("CPA_BASE_URL", "http://127.0.0.1:9999")
+	if got := resolveManagementBaseURL(headers); got != "http://127.0.0.1:9999" {
+		t.Fatalf("env base url = %q", got)
 	}
 }
