@@ -92,7 +92,8 @@ func TestResourcePageHasMobileScopedHostThemeStyles(t *testing.T) {
 		`html[data-grok-theme="dark"]`,
 		`function detectHostTheme()`,
 		`setAttribute('data-grok-theme', detectHostTheme() || 'light')`,
-		`overflow-x:auto`,
+		`grid-template-columns:repeat(2,minmax(0,1fr))`,
+		`grid-column:1 / -1`,
 		`min-width:0`,
 	}
 	for _, marker := range required {

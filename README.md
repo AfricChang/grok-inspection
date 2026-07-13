@@ -2,7 +2,7 @@
 
 CPA（CLIProxyAPI）原生插件，用于在后台巡检 xAI/Grok 账号状态，并给出可执行的处理建议。
 
-版本：`0.1.5` · 菜单名：**Grok 账号巡检**
+版本：`0.1.6` · 菜单名：**Grok 账号巡检**
 
 ## 功能
 
@@ -98,8 +98,8 @@ docker logs -f cpa
 发布版本使用 tag 触发 GitHub Actions：
 
 ```bash
-git tag v0.1.5
-git push origin v0.1.5
+git tag v0.1.6
+git push origin v0.1.6
 ```
 
 ## 数据与安全
