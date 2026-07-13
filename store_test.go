@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"grok-inspection/cpasdk/pluginapi"
 )
@@ -87,17 +88,28 @@ func TestCollectCandidatesFilters(t *testing.T) {
 func TestFilterNewAuthEntriesIncremental(t *testing.T) {
 	known := knownResultKeys([]accountResult{
 		{AuthIndex: "old-1", FileName: "old-a.json", Name: "a@x.com"},
-		{FileName: "old-b.json", Name: "b@x.com"},
+		// No auth_index: skip only by file fingerprint (name+size+mtime), never email alone.
+		{FileName: "old-b.json", FileSize: 10, FileModUnix: 100},
 	})
 	files := []pluginapi.HostAuthFileEntry{
-		{Provider: "xai", AuthIndex: "old-1", Name: "old-a.json", Email: "a@x.com"},
-		{Provider: "xai", AuthIndex: "new-2", Name: "new-c.json", Email: "c@x.com"},
-		{Provider: "xai", AuthIndex: "new-3", Name: "old-b.json", Email: "b@x.com"}, // known by file name
-		{Provider: "openai", AuthIndex: "other", Name: "skip.json"},
+		{Provider: "xai", AuthIndex: "old-1", Name: "old-a.json", Email: "a@x.com"}, // known by auth_index
+		{Provider: "xai", AuthIndex: "new-2", Name: "new-c.json", Email: "c@x.com"}, // new file
+		// Same file name + fingerprint as known, but NEW auth_index → re-inspect (re-import).
+		{Provider: "xai", AuthIndex: "new-3", Name: "old-b.json", Email: "b@x.com", Size: 10, ModTime: time.Unix(100, 0)},
+		// No auth_index, same fingerprint → still known / skip
+		{Provider: "xai", Name: "old-b.json", Size: 10, ModTime: time.Unix(100, 0)},
+		{Provider: "openai", AuthIndex: "other", Name: "skip.json"}, // non-xai skipped
 	}
 	got := filterNewAuthEntries(files, known, false, false)
-	if len(got) != 1 || got[0].AuthIndex != "new-2" {
-		t.Fatalf("incremental targets = %+v", got)
+	if len(got) != 2 {
+		t.Fatalf("incremental targets len=%d got=%+v", len(got), got)
+	}
+	gotIdx := map[string]bool{}
+	for _, f := range got {
+		gotIdx[f.AuthIndex] = true
+	}
+	if !gotIdx["new-2"] || !gotIdx["new-3"] {
+		t.Fatalf("want new-2 and new-3, got %+v", got)
 	}
 }
 
