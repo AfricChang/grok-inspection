@@ -58,3 +58,18 @@ func TestResourcePageHasMobileScopedDarkModeStyles(t *testing.T) {
 		}
 	}
 }
+
+func TestResourcePageShowsManagementKeyPrompt(t *testing.T) {
+	page := string(renderUIPage(pluginName))
+	required := []string{
+		`请输入 CPA Management Key`,
+		`const hasManagementKey = () => !!keyInput.value.trim();`,
+		`$('runBtn').disabled = !hasManagementKey() ||`,
+		`'请输入 CPA Management Key 后加载巡检状态'`,
+	}
+	for _, marker := range required {
+		if !strings.Contains(page, marker) {
+			t.Fatalf("resource page missing management-key UX marker %q", marker)
+		}
+	}
+}

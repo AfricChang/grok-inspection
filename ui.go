@@ -161,7 +161,7 @@ func renderUIPage(pluginID string) []byte {
           <tbody id="rows"></tbody>
         </table>
       </div>
-      <div id="empty" class="empty">点击“开始巡检”检测 Grok 账号</div>
+      <div id="empty" class="empty">请输入 CPA Management Key 后加载巡检状态</div>
       <div id="pager" class="pager"></div>
     </div>
     <pre id="error" class="err" style="margin-top:12px"></pre>
@@ -190,8 +190,18 @@ func renderUIPage(pluginID string) []byte {
   if ($('onlyDisabled').checked) $('includeDisabled').checked = false;
   const keyInput = $('managementKey');
   keyInput.value = localStorage.getItem('grokInspectionManagementKey') || '';
+  const hasManagementKey = () => !!keyInput.value.trim();
+  function updateAuthState() {
+    const ready = hasManagementKey();
+    $('runBtn').disabled = !ready;
+    if (!ready) {
+      $('stopBtn').disabled = true;
+      $('applyBtn').disabled = true;
+    }
+  }
   keyInput.addEventListener('change', () => {
     localStorage.setItem('grokInspectionManagementKey', keyInput.value);
+    updateAuthState();
     refresh();
   });
   const classLabel = {
@@ -255,6 +265,9 @@ func renderUIPage(pluginID string) []byte {
     if (!pageRows.length) {
       tbody.innerHTML = '';
       $('empty').style.display = 'block';
+      $('empty').textContent = hasManagementKey()
+        ? '点击“开始巡检”检测 Grok 账号'
+        : '请输入 CPA Management Key 后加载巡检状态';
     } else {
       $('empty').style.display = 'none';
       tbody.innerHTML = pageRows.map((r) => {
@@ -305,14 +318,16 @@ func renderUIPage(pluginID string) []byte {
     const prev = $('prev'); if (prev) prev.onclick = () => { if (state.page>1){ state.page--; render(); } };
     const next = $('next'); if (next) next.onclick = () => { if (state.page<totalPages){ state.page++; render(); } };
 
-    $('runBtn').disabled = !!(snap.running || snap.applying);
-    $('stopBtn').disabled = !snap.running;
+    $('runBtn').disabled = !hasManagementKey() || !!(snap.running || snap.applying);
+    $('stopBtn').disabled = !hasManagementKey() || !snap.running;
     const actionCount = (snap.results || []).filter((r) => r.action === 'disable' || r.action === 'enable' || r.action === 'delete').length;
-    $('applyBtn').disabled = !!(snap.running || snap.applying || actionCount === 0);
+    $('applyBtn').disabled = !hasManagementKey() || !!(snap.running || snap.applying || actionCount === 0);
     $('applyBtn').textContent = snap.applying
       ? ('执行中 ' + (snap.apply_done||0) + '/' + (snap.apply_total||0))
       : (actionCount ? ('执行建议操作 (' + actionCount + ')') : '执行建议操作');
-    if (snap.applying) {
+    if (!hasManagementKey()) {
+      $('progress').textContent = '请输入 CPA Management Key 后加载巡检状态';
+    } else if (snap.applying) {
       $('progress').textContent = '执行建议 ' + (snap.apply_done||0) + '/' + (snap.apply_total||0) + (snap.apply_current ? '：' + snap.apply_current : '');
     } else if (snap.running) {
       $('progress').textContent = '巡检中 ' + (snap.done||0) + '/' + (snap.total||0) + '（服务端后台继续）';
@@ -326,7 +341,9 @@ func renderUIPage(pluginID string) []byte {
   }
   async function refresh() {
     if (!keyInput.value.trim()) {
+      state.snapshot = { results: [], summary: {}, running: false, applying: false, done: 0, total: 0 };
       $('error').textContent = '';
+      updateAuthState();
       render();
       return;
     }
