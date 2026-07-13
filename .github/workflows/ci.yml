@@ -68,24 +68,12 @@ jobs:
             .
           ls -la dist
 
-      - name: Pack zip
-        shell: bash
-        run: |
-          cd dist
-          asset="grok-inspection_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
-          if command -v zip >/dev/null 2>&1; then
-            zip -9 "$asset" "grok-inspection.${{ matrix.ext }}"
-          else
-            powershell -NoProfile -Command "Compress-Archive -Path 'grok-inspection.${{ matrix.ext }}' -DestinationPath '$asset' -Force"
-          fi
-          ls -la
-
+      # GitHub 下载 artifact 时本身就会再打一层 zip。
+      # 这里只上传插件本体，避免「解压后里面还有一个 zip」的套娃。
       - name: Upload plugin artifact
         uses: actions/upload-artifact@v7
         with:
           name: grok-inspection-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            dist/grok-inspection.${{ matrix.ext }}
-            dist/grok-inspection_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+          path: dist/grok-inspection.${{ matrix.ext }}
           if-no-files-found: error
           retention-days: 30

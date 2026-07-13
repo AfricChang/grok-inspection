@@ -28,18 +28,22 @@ func renderUIPage(pluginID string) []byte {
     button.soft { border-color:#c7d2fe; background:#eef2ff; color:#3730a3; font-weight:650; }
     button.danger { border-color:#fecaca; background:#fef2f2; color:#b91c1c; font-weight:650; }
     button:disabled { opacity:.55; cursor:not-allowed; }
-    .summary { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:10px; margin-bottom:12px; }
+    .summary { display:grid; grid-template-columns:repeat(6,minmax(100px,1fr)); gap:10px; margin-bottom:12px; }
     .card { background:#fff; border:1px solid #e2e8f0; border-radius:10px; padding:12px; box-shadow:0 1px 2px rgba(15,23,42,.04); cursor:pointer; }
     .card.active { outline:2px solid #2563eb; }
     .card .k { color:#64748b; font-size:12px; }
     .card .v { margin-top:4px; font-size:22px; font-weight:750; }
-    .bar { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
-    .filters { display:flex; gap:6px; flex-wrap:wrap; }
-    .filters button { height:28px; }
-    .filters button.active { background:#2563eb; border-color:#2563eb; color:#fff; }
-    .export-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
-    .export-row .hint { font-size:12px; color:#64748b; }
+    .bar { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+    .actions-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .actions-row .hint { font-size:12px; color:#64748b; }
     .progress { min-height:20px; font-size:12px; color:#64748b; }
+    .modal { position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center; background:rgba(15,23,42,.45); padding:16px; }
+    .modal.hidden { display:none; }
+    .modal-card { width:min(440px,100%%); background:#fff; border-radius:12px; border:1px solid #e2e8f0; box-shadow:0 20px 40px rgba(15,23,42,.18); padding:18px 18px 14px; }
+    .modal-title { font-size:16px; font-weight:700; color:#0f172a; margin-bottom:10px; }
+    .modal-msg { font-size:13px; line-height:1.6; color:#334155; white-space:pre-wrap; margin-bottom:16px; }
+    .modal-actions { display:flex; justify-content:flex-end; gap:8px; }
+    .modal-actions button { min-width:76px; }
     .table-wrap { background:#fff; border:1px solid #e2e8f0; border-radius:10px; overflow:hidden; box-shadow:0 1px 2px rgba(15,23,42,.04); }
     table { width:100%%; border-collapse:collapse; min-width:980px; font-size:13px; }
     th { padding:10px 12px; border-bottom:1px solid #e2e8f0; text-align:left; background:linear-gradient(180deg,#f8fafc 0%%,#f1f5f9 100%%); color:#475569; font-size:12px; }
@@ -66,15 +70,17 @@ func renderUIPage(pluginID string) []byte {
     .grok-inspection-page { min-width:0; color:var(--text) !important; }
     .grok-inspection-page .sub,
     .grok-inspection-page .progress,
-    .grok-inspection-page .export-row .hint,
+    .grok-inspection-page .actions-row .hint,
     .grok-inspection-page .card .k { color:var(--muted) !important; }
     .grok-inspection-page .ctl,
     .grok-inspection-page button,
     .grok-inspection-page .card,
-    .grok-inspection-page .table-wrap { color:var(--text) !important; background:var(--surface) !important; border-color:var(--border) !important; }
+    .grok-inspection-page .table-wrap,
+    .grok-inspection-page .modal-card { color:var(--text) !important; background:var(--surface) !important; border-color:var(--border) !important; }
     .grok-inspection-page button.primary { background:#2563eb !important; border-color:#2563eb !important; color:#fff !important; }
     .grok-inspection-page button.soft { background:#eef2ff !important; border-color:#c7d2fe !important; color:#3730a3 !important; }
     .grok-inspection-page button.danger { background:#fef2f2 !important; border-color:#fecaca !important; color:#b91c1c !important; }
+    .grok-inspection-page .modal-msg { color:var(--text) !important; }
     .grok-inspection-page input[type=number],
     .grok-inspection-page .key-row input { color:var(--text) !important; background:var(--surface) !important; border-color:var(--input-border) !important; }
     .grok-inspection-page th { background:var(--surface-subtle) !important; color:var(--muted) !important; border-color:var(--border) !important; }
@@ -124,9 +130,8 @@ func renderUIPage(pluginID string) []byte {
       .grok-inspection-page .card { min-width:0; padding:10px; }
       .grok-inspection-page .card .v { font-size:26px; }
       .grok-inspection-page .bar { display:block; }
-      .grok-inspection-page .filters { margin-top:8px; overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; scrollbar-width:thin; }
-      .grok-inspection-page .filters button { flex:0 0 auto; }
-      .grok-inspection-page .export-row { margin-top:8px; }
+      .grok-inspection-page .actions-row { margin-top:8px; width:100%%; }
+      .grok-inspection-page .actions-row > button { flex:1 1 auto; min-width:0; }
       .grok-inspection-page .pager { align-items:stretch; }
       .grok-inspection-page .pager > div { width:100%%; }
       .grok-inspection-page .pager > div:last-child { justify-content:space-between; }
@@ -156,15 +161,23 @@ func renderUIPage(pluginID string) []byte {
     </div>
     <div id="summary" class="summary"></div>
     <div class="bar">
-      <div id="filters" class="filters"></div>
+      <div class="actions-row">
+        <button id="batchExportBtn" type="button" disabled>批量导出</button>
+        <button id="batchDisableBtn" class="soft" type="button" disabled>批量禁用</button>
+        <button id="batchDeleteBtn" class="danger" type="button" disabled>批量删除</button>
+        <span class="hint" id="exportHint">点击上方卡片切换分类；批量操作作用于当前分类</span>
+      </div>
       <div id="progress" class="progress">等待开始</div>
     </div>
-    <div class="export-row">
-      <button id="exportJsonBtn" type="button">导出 JSON</button>
-      <button id="exportTxtBtn" type="button">导出 TXT</button>
-      <button id="batchDisableBtn" class="soft" type="button" disabled>批量禁用</button>
-      <button id="batchDeleteBtn" class="danger" type="button" disabled>批量删除</button>
-      <span class="hint" id="exportHint">按当前筛选：导出 / 批量禁用 / 批量删除</span>
+    <div id="confirmModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true">
+        <div id="confirmTitle" class="modal-title">确认操作</div>
+        <div id="confirmMsg" class="modal-msg"></div>
+        <div class="modal-actions">
+          <button type="button" id="confirmCancel">取消</button>
+          <button type="button" id="confirmOk" class="primary">确定</button>
+        </div>
+      </div>
     </div>
     <div class="table-wrap">
       <div style="overflow:auto">
@@ -249,9 +262,28 @@ func renderUIPage(pluginID string) []byte {
       $('stopBtn').disabled = true;
       $('applyBtn').disabled = true;
       $('incrBtn').disabled = true;
+      $('batchExportBtn').disabled = true;
       $('batchDisableBtn').disabled = true;
       $('batchDeleteBtn').disabled = true;
     }
+  }
+  let confirmResolver = null;
+  function closeConfirm(ok) {
+    $('confirmModal').classList.add('hidden');
+    $('confirmModal').setAttribute('aria-hidden', 'true');
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    if (resolve) resolve(!!ok);
+  }
+  function confirmDialog(title, message) {
+    return new Promise((resolve) => {
+      confirmResolver = resolve;
+      $('confirmTitle').textContent = title || '确认操作';
+      $('confirmMsg').textContent = message || '';
+      $('confirmModal').classList.remove('hidden');
+      $('confirmModal').setAttribute('aria-hidden', 'false');
+      $('confirmOk').focus();
+    });
   }
   async function startInspection(incremental) {
     try {
@@ -278,16 +310,21 @@ func renderUIPage(pluginID string) []byte {
     const rows = filtered();
     const indexes = filteredAuthIndexes();
     if (!rows.length || !indexes.length) {
-      $('error').textContent = '当前筛选下没有可操作的账号';
+      $('error').textContent = '当前分类「' + filterLabel() + '」下没有可操作的账号';
       return;
     }
     const label = action === 'delete' ? '删除' : '禁用';
     const extra = action === 'delete'
-      ? '将同时删除 CPA Auth 凭证文件，并更新本地结果 JSON。'
-      : '将写入 CPA Auth 为禁用，并更新本地结果 JSON。';
-    if (!confirm('确认对当前筛选「' + filterLabel() + '」共 ' + indexes.length + ' 个账号执行批量' + label + '？\\n' + extra)) {
-      return;
-    }
+      ? '将删除 CPA Auth 凭证文件，并更新本地结果 JSON。此操作不可恢复。'
+      : '将把账号写入 CPA Auth 为禁用，并更新本地结果 JSON。';
+    const ok = await confirmDialog(
+      '批量' + label + '确认',
+      '当前分类：' + filterLabel() + '\n' +
+      '影响账号：' + indexes.length + ' 个\n\n' +
+      '将对上述账号执行批量' + label + '。\n' + extra + '\n\n' +
+      '请确认是否继续？'
+    );
+    if (!ok) return;
     try {
       await api('/apply', {
         method: 'POST',
@@ -300,6 +337,22 @@ func renderUIPage(pluginID string) []byte {
     } catch (e) {
       $('error').textContent = String(e.message || e);
     }
+  }
+  async function batchExport() {
+    const rows = filtered();
+    if (!rows.length) {
+      $('error').textContent = '当前分类「' + filterLabel() + '」下没有可导出的数据';
+      return;
+    }
+    const ok = await confirmDialog(
+      '批量导出确认',
+      '当前分类：' + filterLabel() + '\n' +
+      '导出条数：' + rows.length + ' 条\n\n' +
+      '将导出当前分类下的全部账号（不是仅当前页）为 JSON 文件。\n\n' +
+      '请确认是否继续？'
+    );
+    if (!ok) return;
+    exportRows('json');
   }
   keyInput.addEventListener('change', () => {
     localStorage.setItem('grokInspectionManagementKey', keyInput.value);
@@ -335,10 +388,24 @@ func renderUIPage(pluginID string) []byte {
   function filtered() {
     const rows = state.snapshot.results || [];
     if (state.filter === 'all') return rows;
+    // 「异常」= 探测异常 / 模型不可用 / 未知 等非主分类
+    if (state.filter === 'other') {
+      return rows.filter((r) => {
+        const c = r.classification || '';
+        return c !== 'healthy' && c !== 'permission_denied' && c !== 'quota_exhausted' && c !== 'reauth';
+      });
+    }
     return rows.filter((r) => r.classification === state.filter);
   }
   function filterLabel() {
-    const map = { all:'全部', healthy:'健康', permission_denied:'权限被拒', quota_exhausted:'额度用尽', reauth:'需重登', probe_error:'异常' };
+    const map = {
+      all: '全部',
+      healthy: '健康',
+      permission_denied: '权限被拒',
+      quota_exhausted: '额度用尽',
+      reauth: '需重登',
+      other: '异常'
+    };
     return map[state.filter] || state.filter;
   }
   function downloadBlob(filename, content, mime) {
@@ -398,6 +465,7 @@ func renderUIPage(pluginID string) []byte {
       ['permission_denied','权限被拒', summary.permission_denied || 0],
       ['quota_exhausted','额度用尽', summary.quota_exhausted || 0],
       ['reauth','需重登', summary.reauth || 0],
+      ['other','异常', summary.other || 0],
     ];
     $('summary').innerHTML = cards.map(([key,label,value]) => {
       const active = (key === 'total' && state.filter === 'all') || state.filter === key;
@@ -407,12 +475,9 @@ func renderUIPage(pluginID string) []byte {
       state.filter = el.dataset.filter === 'total' ? 'all' : el.dataset.filter;
       state.page = 1; render();
     });
-    const filters = [['all','全部'],['healthy','健康'],['permission_denied','权限被拒'],['quota_exhausted','额度用尽'],['reauth','需重登'],['probe_error','异常']];
-    $('filters').innerHTML = filters.map(([k,l]) => '<button data-filter="' + k + '" class="' + (state.filter===k?'active':'') + '">' + l + '</button>').join('');
-    $('filters').querySelectorAll('button').forEach((btn) => btn.onclick = () => { state.filter = btn.dataset.filter; state.page = 1; render(); });
 
     const rows = filtered();
-    $('exportHint').textContent = '当前筛选：' + filterLabel() + '（' + rows.length + ' 条）· 导出 / 批量禁用 / 批量删除均基于此';
+    $('exportHint').textContent = '当前分类：' + filterLabel() + '（' + rows.length + ' 条）';
     const totalPages = Math.max(1, Math.ceil(rows.length / state.pageSize));
     if (state.page > totalPages) state.page = totalPages;
     const start = (state.page - 1) * state.pageSize;
@@ -482,11 +547,13 @@ func renderUIPage(pluginID string) []byte {
     $('incrBtn').disabled = !hasManagementKey() || busy || !hasResults;
     $('stopBtn').disabled = !hasManagementKey() || !snap.running;
     $('applyBtn').disabled = !hasManagementKey() || busy || actionCount === 0;
+    $('batchExportBtn').disabled = filteredCount === 0;
     $('batchDisableBtn').disabled = !hasManagementKey() || busy || filteredCount === 0;
     $('batchDeleteBtn').disabled = !hasManagementKey() || busy || filteredCount === 0;
     $('applyBtn').textContent = snap.applying
       ? ('执行中 ' + (snap.apply_done||0) + '/' + (snap.apply_total||0))
       : (actionCount ? ('执行建议操作 (' + actionCount + ')') : '执行建议操作');
+    $('batchExportBtn').textContent = filteredCount ? ('批量导出 (' + filteredCount + ')') : '批量导出';
     $('batchDisableBtn').textContent = filteredCount ? ('批量禁用 (' + filteredCount + ')') : '批量禁用';
     $('batchDeleteBtn').textContent = filteredCount ? ('批量删除 (' + filteredCount + ')') : '批量删除';
     if (!hasManagementKey()) {
@@ -592,7 +659,14 @@ func renderUIPage(pluginID string) []byte {
     catch (e) { $('error').textContent = String(e.message || e); }
   };
   $('applyBtn').onclick = async () => {
-    if (!confirm('确认异步执行当前建议的禁用/启用/删除操作？')) return;
+    const actionCount = (state.snapshot.results || []).filter((r) => r.action === 'disable' || r.action === 'enable' || r.action === 'delete').length;
+    const ok = await confirmDialog(
+      '执行建议操作确认',
+      '将对全部结果中「有建议动作」的账号异步执行禁用/启用/删除（共 ' + actionCount + ' 条建议）。\n' +
+      '说明：此操作按建议执行，不受上方卡片当前分类限制。\n\n' +
+      '请确认是否继续？'
+    );
+    if (!ok) return;
     try {
       const result = await api('/apply', { method: 'POST', body: '{}' });
       const total = Number(result && result.apply_total || 0);
@@ -609,8 +683,12 @@ func renderUIPage(pluginID string) []byte {
   };
   $('batchDisableBtn').onclick = () => batchForce('disable');
   $('batchDeleteBtn').onclick = () => batchForce('delete');
-  $('exportJsonBtn').onclick = () => exportRows('json');
-  $('exportTxtBtn').onclick = () => exportRows('txt');
+  $('batchExportBtn').onclick = () => batchExport();
+  $('confirmOk').onclick = () => closeConfirm(true);
+  $('confirmCancel').onclick = () => closeConfirm(false);
+  $('confirmModal').addEventListener('click', (ev) => {
+    if (ev.target === $('confirmModal')) closeConfirm(false);
+  });
   wireExclusive();
   // One-shot load on open; polling starts only when status reports running/applying.
   refresh();

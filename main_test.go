@@ -80,14 +80,17 @@ func TestResourcePageHasExportAndBatchOps(t *testing.T) {
 		`id="workers"`,
 		`value="6"`,
 		`parseWorkersStrict`,
-		`id="exportJsonBtn"`,
-		`id="exportTxtBtn"`,
+		`id="batchExportBtn"`,
 		`id="batchDisableBtn"`,
 		`id="batchDeleteBtn"`,
+		`id="confirmModal"`,
+		`function confirmDialog`,
+		`当前分类：`,
 		`force_action: action`,
 		`filteredAuthIndexes`,
 		`批量禁用`,
 		`批量删除`,
+		`批量导出`,
 		`function stopPolling()`,
 		`function startPolling()`,
 		`function syncPolling(snap)`,
@@ -95,6 +98,7 @@ func TestResourcePageHasExportAndBatchOps(t *testing.T) {
 		`id="incrBtn"`,
 		`增量巡检`,
 		`incremental: !!incremental`,
+		`['other','异常'`,
 	}
 	for _, marker := range required {
 		if !strings.Contains(page, marker) {
@@ -103,6 +107,10 @@ func TestResourcePageHasExportAndBatchOps(t *testing.T) {
 	}
 	if strings.Contains(page, `setInterval(refresh, 1500)`) {
 		t.Fatal("page must not permanently poll /status every 1.5s when idle")
+	}
+	// Duplicate filter button row should be gone; cards are the only category UI.
+	if strings.Contains(page, `id="filters"`) {
+		t.Fatal("duplicate filter button row should be removed; use summary cards only")
 	}
 }
 
