@@ -167,8 +167,9 @@ func renderUIPage(pluginID string) []byte {
       <div class="actions-row">
         <button id="batchExportBtn" type="button" disabled>批量导出</button>
         <button id="batchDisableBtn" class="soft" type="button" disabled>批量禁用</button>
+        <button id="batchEnableBtn" class="soft" type="button" disabled>批量启用</button>
         <button id="batchDeleteBtn" class="danger" type="button" disabled>批量删除</button>
-        <span class="hint" id="exportHint">点击上方卡片切换分类；批量操作作用于当前分类</span>
+        <span class="hint" id="exportHint">点击上方卡片切换分类；禁用/启用数量按当前分类下列表的启用/禁用状态统计</span>
       </div>
       <div id="progress" class="progress">等待开始</div>
     </div>
@@ -267,6 +268,7 @@ func renderUIPage(pluginID string) []byte {
       $('incrBtn').disabled = true;
       $('batchExportBtn').disabled = true;
       $('batchDisableBtn').disabled = true;
+      $('batchEnableBtn').disabled = true;
       $('batchDeleteBtn').disabled = true;
     }
   }
@@ -306,24 +308,43 @@ func renderUIPage(pluginID string) []byte {
       await refresh();
     } catch (e) { $('error').textContent = String(e.message || e); }
   }
-  function filteredAuthIndexes() {
-    return filtered().map((r) => r.auth_index || r.file_name || r.name || r.email).filter(Boolean);
+  function rowKey(r) {
+    return r.auth_index || r.file_name || r.name || r.email || '';
+  }
+  // 批量禁用：只针对当前分类下「已启用」的号；批量启用：只针对「已禁用」的号。
+  function filteredRowsForAction(action) {
+    const rows = filtered();
+    if (action === 'disable') return rows.filter((r) => !r.disabled);
+    if (action === 'enable') return rows.filter((r) => !!r.disabled);
+    return rows; // delete / export 用全部分类内账号
+  }
+  function filteredAuthIndexesForAction(action) {
+    return filteredRowsForAction(action).map(rowKey).filter(Boolean);
   }
   async function batchForce(action) {
-    const rows = filtered();
-    const indexes = filteredAuthIndexes();
-    if (!rows.length || !indexes.length) {
-      $('error').textContent = '当前分类「' + filterLabel() + '」下没有可操作的账号';
+    const targetRows = filteredRowsForAction(action);
+    const indexes = targetRows.map(rowKey).filter(Boolean);
+    if (!targetRows.length || !indexes.length) {
+      const tip = action === 'disable'
+        ? '没有「已启用」可禁用的账号'
+        : (action === 'enable' ? '没有「已禁用」可启用的账号' : '没有可操作的账号');
+      $('error').textContent = '当前分类「' + filterLabel() + '」下' + tip;
       return;
     }
-    const label = action === 'delete' ? '删除' : '禁用';
+    const label = action === 'delete' ? '删除' : (action === 'enable' ? '启用' : '禁用');
+    const stateHint = action === 'disable'
+      ? '仅包含当前列表中状态为「已启用」的账号。'
+      : (action === 'enable' ? '仅包含当前列表中状态为「已禁用」的账号。' : '包含当前分类下全部账号。');
     const extra = action === 'delete'
       ? '将删除 CPA Auth 凭证文件，并更新本地结果 JSON。此操作不可恢复。'
-      : '将把账号写入 CPA Auth 为禁用，并更新本地结果 JSON。';
+      : (action === 'enable'
+        ? '将把账号写入 CPA Auth 为启用，并更新本地结果 JSON。'
+        : '将把账号写入 CPA Auth 为禁用，并更新本地结果 JSON。');
     const ok = await confirmDialog(
       '批量' + label + '确认',
       '当前分类：' + filterLabel() + '\n' +
-      '影响账号：' + indexes.length + ' 个\n\n' +
+      '影响账号：' + indexes.length + ' 个\n' +
+      stateHint + '\n\n' +
       '将对上述账号执行批量' + label + '。\n' + extra + '\n\n' +
       '请确认是否继续？'
     );
@@ -544,6 +565,8 @@ func renderUIPage(pluginID string) []byte {
 
     const actionCount = (snap.results || []).filter((r) => r.action === 'disable' || r.action === 'enable' || r.action === 'delete').length;
     const filteredCount = rows.length;
+    const disableCount = rows.filter((r) => !r.disabled).length; // 当前分类下已启用 → 可禁用
+    const enableCount = rows.filter((r) => !!r.disabled).length;  // 当前分类下已禁用 → 可启用
     const busy = !!(snap.running || snap.applying);
     const hasResults = (snap.results || []).length > 0;
     $('runBtn').disabled = !hasManagementKey() || busy;
@@ -551,13 +574,15 @@ func renderUIPage(pluginID string) []byte {
     $('stopBtn').disabled = !hasManagementKey() || !snap.running;
     $('applyBtn').disabled = !hasManagementKey() || busy || actionCount === 0;
     $('batchExportBtn').disabled = filteredCount === 0;
-    $('batchDisableBtn').disabled = !hasManagementKey() || busy || filteredCount === 0;
+    $('batchDisableBtn').disabled = !hasManagementKey() || busy || disableCount === 0;
+    $('batchEnableBtn').disabled = !hasManagementKey() || busy || enableCount === 0;
     $('batchDeleteBtn').disabled = !hasManagementKey() || busy || filteredCount === 0;
     $('applyBtn').textContent = snap.applying
       ? ('执行中 ' + (snap.apply_done||0) + '/' + (snap.apply_total||0))
       : (actionCount ? ('执行建议操作 (' + actionCount + ')') : '执行建议操作');
     $('batchExportBtn').textContent = filteredCount ? ('批量导出 (' + filteredCount + ')') : '批量导出';
-    $('batchDisableBtn').textContent = filteredCount ? ('批量禁用 (' + filteredCount + ')') : '批量禁用';
+    $('batchDisableBtn').textContent = disableCount ? ('批量禁用 (' + disableCount + ')') : '批量禁用';
+    $('batchEnableBtn').textContent = enableCount ? ('批量启用 (' + enableCount + ')') : '批量启用';
     $('batchDeleteBtn').textContent = filteredCount ? ('批量删除 (' + filteredCount + ')') : '批量删除';
     if (!hasManagementKey()) {
       $('progress').textContent = '请输入 CPA Management Key 后加载巡检状态';
@@ -685,6 +710,7 @@ func renderUIPage(pluginID string) []byte {
     catch (e) { $('error').textContent = String(e.message || e); }
   };
   $('batchDisableBtn').onclick = () => batchForce('disable');
+  $('batchEnableBtn').onclick = () => batchForce('enable');
   $('batchDeleteBtn').onclick = () => batchForce('delete');
   $('batchExportBtn').onclick = () => batchExport();
   $('confirmOk').onclick = () => closeConfirm(true);
