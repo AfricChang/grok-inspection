@@ -100,26 +100,24 @@ func renderUIPage(pluginID string) []byte {
     .grok-inspection-page .actions-row { display:flex; gap:8px; flex-wrap:wrap; width:100%%; }
     .grok-inspection-page .settings-row > .ctl,
     .grok-inspection-page .actions-row > button { min-width:0; }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        color-scheme: dark;
-        --page-bg: #111827;
-        --surface: #182131;
-        --surface-muted: #151d2b;
-        --surface-subtle: #1d2737;
-        --text: #f8fafc;
-        --muted: #a7b3c7;
-        --border: #334155;
-        --border-subtle: #273449;
-        --input-border: #475569;
-      }
-      .grok-inspection-page button.soft { background:#242c58 !important; border-color:#4b5aa6 !important; color:#dbe4ff !important; }
-      .grok-inspection-page button.danger { background:#3f1d1d !important; border-color:#7f1d1d !important; color:#fecaca !important; }
-      .grok-inspection-page .badge { background:#252b63 !important; color:#c7d2fe !important; }
-      .grok-inspection-page .card.active { outline-color:#60a5fa !important; }
-      .grok-inspection-page .progress.live { color:#93c5fd !important; background:#1e3a5f !important; border-color:#3b82f6 !important; }
-      .grok-inspection-page .progress.live::before { background:#60a5fa; }
+    html[data-grok-theme="dark"] {
+      color-scheme: dark;
+      --page-bg: #111827;
+      --surface: #182131;
+      --surface-muted: #151d2b;
+      --surface-subtle: #1d2737;
+      --text: #f8fafc;
+      --muted: #a7b3c7;
+      --border: #334155;
+      --border-subtle: #273449;
+      --input-border: #475569;
     }
+    html[data-grok-theme="dark"] .grok-inspection-page button.soft { background:#242c58 !important; border-color:#4b5aa6 !important; color:#dbe4ff !important; }
+    html[data-grok-theme="dark"] .grok-inspection-page button.danger { background:#3f1d1d !important; border-color:#7f1d1d !important; color:#fecaca !important; }
+    html[data-grok-theme="dark"] .grok-inspection-page .badge { background:#252b63 !important; color:#c7d2fe !important; }
+    html[data-grok-theme="dark"] .grok-inspection-page .card.active { outline-color:#60a5fa !important; }
+    html[data-grok-theme="dark"] .grok-inspection-page .progress.live { color:#93c5fd !important; background:#1e3a5f !important; border-color:#3b82f6 !important; }
+    html[data-grok-theme="dark"] .grok-inspection-page .progress.live::before { background:#60a5fa; }
     @media (max-width:760px){
       body { overflow-x:hidden !important; }
       .grok-inspection-page { padding:14px 12px calc(24px + env(safe-area-inset-bottom)); }
@@ -214,6 +212,65 @@ func renderUIPage(pluginID string) []byte {
     </div>
   </div>
   <script>
+  function namedTheme(value) {
+    const text = String(value || '').trim().toLowerCase();
+    if (text.includes('dark') || text.includes('night')) return 'dark';
+    if (text.includes('light') || text.includes('day')) return 'light';
+    return '';
+  }
+  function elementTheme(el) {
+    if (!el) return '';
+    for (const name of ['data-theme', 'data-color-scheme', 'data-mode', 'data-bs-theme']) {
+      const theme = namedTheme(el.getAttribute && el.getAttribute(name));
+      if (theme) return theme;
+    }
+    return namedTheme(el.className);
+  }
+  function backgroundTheme(doc) {
+    if (!doc || !doc.defaultView) return '';
+    for (const el of [doc.body, doc.documentElement]) {
+      if (!el) continue;
+      const color = doc.defaultView.getComputedStyle(el).backgroundColor || '';
+      const match = color.match(/rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\)/i);
+      if (!match || (match[4] != null && Number(match[4]) < 0.2)) continue;
+      const rgb = [Number(match[1]), Number(match[2]), Number(match[3])].map((value) => {
+        const n = value / 255;
+        return n <= 0.04045 ? n / 12.92 : Math.pow((n + 0.055) / 1.055, 2.4);
+      });
+      const luminance = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+      return luminance < 0.32 ? 'dark' : 'light';
+    }
+    return '';
+  }
+  function detectHostTheme() {
+    try {
+      if (window.parent && window.parent !== window) {
+        const doc = window.parent.document;
+        return elementTheme(doc.documentElement) || elementTheme(doc.body) || backgroundTheme(doc);
+      }
+    } catch (_) {}
+    return elementTheme(document.documentElement) || elementTheme(document.body) || backgroundTheme(document) || 'light';
+  }
+  function syncHostTheme() {
+    document.documentElement.setAttribute('data-grok-theme', detectHostTheme() || 'light');
+  }
+  syncHostTheme();
+  try {
+    if (window.parent && window.parent !== window) {
+      const parentDoc = window.parent.document;
+      const themeObserver = new MutationObserver(syncHostTheme);
+      const themeTargets = [parentDoc.documentElement, parentDoc.body].filter(Boolean);
+      for (const target of themeTargets) {
+        themeObserver.observe(target, {
+          attributes: true,
+          attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme', 'data-mode', 'data-bs-theme']
+        });
+      }
+    }
+  } catch (_) {}
+  window.addEventListener('pageshow', syncHostTheme);
+  window.addEventListener('storage', syncHostTheme);
+
   const BASE = %q;
   const WORKERS_MIN = 1;
   const WORKERS_MAX = 16;

@@ -575,31 +575,23 @@ func inspectAccount(file pluginapi.HostAuthFileEntry) accountResult {
 		return base
 	}
 
+	outcome := newProbeOutcome(chatResp, base.Disabled)
 	status := chatResp.StatusCode
-	parsed := extractError(chatResp.Body)
 	if status == http.StatusForbidden || status == http.StatusUnauthorized || status == http.StatusTooManyRequests || status == http.StatusPaymentRequired {
 		// fallback to chat completions
 		fallbackBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"stream":false}`, model)
 		fallbackResp, errFallback := callHostAPICall(file.AuthIndex, http.MethodPost, "https://cli-chat-proxy.grok.com/v1/chat/completions", []byte(fallbackBody), true)
 		if errFallback == nil {
-			chatResp = fallbackResp
-			status = fallbackResp.StatusCode
-			parsed = extractError(fallbackResp.Body)
+			outcome = resolveProbeOutcome(outcome, newProbeOutcome(fallbackResp, base.Disabled))
 		}
 	}
 
-	classified := classifyProbe(classifyInput{
-		ChatStatus: status,
-		ChatCode:   parsed.Code,
-		ChatError:  parsed.Message,
-		Disabled:   base.Disabled,
-	})
-	base.HTTPStatus = status
-	base.ErrorCode = parsed.Code
-	base.ErrorMessage = parsed.Message
-	base.Classification = classified.Classification
-	base.Action = classified.Action
-	base.Reason = classified.Reason
+	base.HTTPStatus = outcome.Response.StatusCode
+	base.ErrorCode = outcome.Error.Code
+	base.ErrorMessage = outcome.Error.Message
+	base.Classification = outcome.Classified.Classification
+	base.Action = outcome.Classified.Action
+	base.Reason = outcome.Classified.Reason
 	return base
 }
 
@@ -607,6 +599,38 @@ type apiCallResponse struct {
 	StatusCode int                 `json:"status_code"`
 	Header     map[string][]string `json:"header"`
 	Body       string              `json:"body"`
+}
+
+type probeOutcome struct {
+	Response   apiCallResponse
+	Error      probeError
+	Classified classifyResult
+}
+
+func newProbeOutcome(resp apiCallResponse, disabled bool) probeOutcome {
+	parsed := extractError(resp.Body)
+	return probeOutcome{
+		Response: resp,
+		Error:    parsed,
+		Classified: classifyProbe(classifyInput{
+			ChatStatus: resp.StatusCode,
+			ChatCode:   parsed.Code,
+			ChatError:  parsed.Message,
+			Disabled:   disabled,
+		}),
+	}
+}
+
+func resolveProbeOutcome(primary, fallback probeOutcome) probeOutcome {
+	switch primary.Classified.Classification {
+	case "reauth", "quota_exhausted", "permission_denied":
+		if fallback.Classified.Classification == "healthy" {
+			primary.Classified.Reason += "；备用接口结果不一致，按主探测结果判定"
+		}
+		return primary
+	default:
+		return fallback
+	}
 }
 
 const xaiInspectionClientVersion = "0.2.93"

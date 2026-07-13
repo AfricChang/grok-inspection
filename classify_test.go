@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -63,5 +64,43 @@ func TestXAIInspectionHeadersMatchCLIProxyIdentity(t *testing.T) {
 	}
 	if got := headers.Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q", got)
+	}
+}
+
+func TestResolveProbeOutcomeKeepsPrimaryQuotaWhenFallbackHealthy(t *testing.T) {
+	primary := newProbeOutcome(apiCallResponse{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       `{"code":"free-usage-exhausted","error":"Included free usage has been exhausted"}`,
+	}, false)
+	fallback := newProbeOutcome(apiCallResponse{
+		StatusCode: http.StatusOK,
+		Body:       `{"choices":[{"message":{"content":"pong"}}]}`,
+	}, false)
+
+	got := resolveProbeOutcome(primary, fallback)
+	if got.Classified.Classification != "quota_exhausted" || got.Classified.Action != "disable" {
+		t.Fatalf("got %+v", got)
+	}
+	if got.Response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", got.Response.StatusCode)
+	}
+	if !strings.Contains(got.Classified.Reason, "结果不一致") {
+		t.Fatalf("reason = %q", got.Classified.Reason)
+	}
+}
+
+func TestResolveProbeOutcomeUsesFallbackForAmbiguousPrimary(t *testing.T) {
+	primary := newProbeOutcome(apiCallResponse{
+		StatusCode: http.StatusInternalServerError,
+		Body:       `{"error":"temporary upstream failure"}`,
+	}, false)
+	fallback := newProbeOutcome(apiCallResponse{
+		StatusCode: http.StatusOK,
+		Body:       `{"choices":[{"message":{"content":"pong"}}]}`,
+	}, false)
+
+	got := resolveProbeOutcome(primary, fallback)
+	if got.Classified.Classification != "healthy" {
+		t.Fatalf("got %+v", got)
 	}
 }

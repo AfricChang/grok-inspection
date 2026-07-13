@@ -83,13 +83,15 @@ func TestResourcePageDoesNotPollWithoutManagementKey(t *testing.T) {
 	}
 }
 
-func TestResourcePageHasMobileScopedDarkModeStyles(t *testing.T) {
+func TestResourcePageHasMobileScopedHostThemeStyles(t *testing.T) {
 	page := string(renderUIPage(pluginName))
 	required := []string{
 		`class="wrap grok-inspection-page"`,
 		`.grok-inspection-page`,
 		`@media (max-width:760px)`,
-		`@media (prefers-color-scheme: dark)`,
+		`html[data-grok-theme="dark"]`,
+		`function detectHostTheme()`,
+		`setAttribute('data-grok-theme', detectHostTheme() || 'light')`,
 		`overflow-x:auto`,
 		`min-width:0`,
 	}

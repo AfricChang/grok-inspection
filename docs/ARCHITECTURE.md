@@ -76,11 +76,13 @@ Then it tests the account with:
 POST https://cli-chat-proxy.grok.com/v1/responses
 ```
 
-If the main probe receives common auth, quota, or permission errors, it falls back to:
+If the main probe receives common auth, quota, or permission errors, it also checks:
 
 ```text
 POST https://cli-chat-proxy.grok.com/v1/chat/completions
 ```
+
+Explicit authentication, quota, and permission failures from the primary `/responses` probe remain authoritative if the fallback returns a conflicting success. This avoids classifying an exhausted account as healthy because the two upstream endpoints briefly disagree.
 
 The probe classifies HTTP status and structured error fields. It does not rely on natural-language model output.
 
