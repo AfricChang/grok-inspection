@@ -121,18 +121,27 @@ func classifyProbe(input classifyInput) classifyResult {
 	) {
 		return classifyResult{Classification: "reauth", Action: "delete", Reason: "认证已过期或失效"}
 	}
-	if status == http.StatusTooManyRequests || containsAny(blob,
+	// Real free-usage exhaustion (not every bare HTTP 429 rate limit).
+	if containsAny(blob,
 		"free-usage-exhausted",
 		"included free usage",
 		"usage_limit_reached",
 		"quota exhausted",
-		"limit reached",
+		"subscription:free-usage",
 	) {
 		action := "disable"
 		if disabled {
 			action = "keep"
 		}
 		return classifyResult{Classification: "quota_exhausted", Action: action, Reason: "额度已用尽"}
+	}
+	// Bare 429 / temporary throttling: do not recommend disable.
+	if status == http.StatusTooManyRequests {
+		return classifyResult{
+			Classification: "probe_error",
+			Action:         "keep",
+			Reason:         "临时限流 (HTTP 429)，建议稍后重试",
+		}
 	}
 	if status == http.StatusPaymentRequired || status == http.StatusForbidden || containsAny(blob,
 		"permission-denied",

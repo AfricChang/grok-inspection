@@ -104,3 +104,40 @@ func TestResolveProbeOutcomeUsesFallbackForAmbiguousPrimary(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestClassifyBare429IsProbeErrorNotQuota(t *testing.T) {
+	got := classifyProbe(classifyInput{
+		ChatStatus: http.StatusTooManyRequests,
+		ChatError:  "rate limited",
+	})
+	if got.Classification != "probe_error" || got.Action != "keep" {
+		t.Fatalf("bare 429 should be probe_error/keep, got %+v", got)
+	}
+}
+
+func TestClassifyFreeUsageExhaustedIsQuota(t *testing.T) {
+	got := classifyProbe(classifyInput{
+		ChatStatus: http.StatusTooManyRequests,
+		ChatCode:   "free-usage-exhausted",
+		ChatError:  "Included free usage has been exhausted",
+	})
+	if got.Classification != "quota_exhausted" || got.Action != "disable" {
+		t.Fatalf("free-usage should be quota_exhausted/disable, got %+v", got)
+	}
+}
+
+func TestResolveProbeOutcomeUsesFallbackWhenPrimaryBare429(t *testing.T) {
+	primary := newProbeOutcome(apiCallResponse{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       `{"error":"too many requests"}`,
+	}, false)
+	fallback := newProbeOutcome(apiCallResponse{
+		StatusCode: http.StatusOK,
+		Body:       `{"choices":[{"message":{"content":"pong"}}]}`,
+	}, false)
+	got := resolveProbeOutcome(primary, fallback)
+	if got.Classified.Classification != "healthy" {
+		t.Fatalf("bare 429 + healthy fallback should be healthy, got %+v", got)
+	}
+}
+
