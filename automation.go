@@ -31,20 +31,24 @@ type automationRule struct {
 }
 
 type automationHistory struct {
-	ID             string `json:"id"`
-	RuleID         string `json:"rule_id,omitempty"`
-	RuleName       string `json:"rule_name,omitempty"`
-	Kind           string `json:"kind"`
-	StartedAt      string `json:"started_at"`
-	FinishedAt     string `json:"finished_at,omitempty"`
-	Status         string `json:"status"`
-	Inspected      int    `json:"inspected,omitempty"`
-	Applied        int    `json:"applied,omitempty"`
-	Account        string `json:"account,omitempty"`
-	Classification string `json:"classification,omitempty"`
-	HTTPStatus     int    `json:"http_status,omitempty"`
-	Error          string `json:"error,omitempty"`
-	Message        string `json:"message,omitempty"`
+	ID             string         `json:"id"`
+	RuleID         string         `json:"rule_id,omitempty"`
+	RuleName       string         `json:"rule_name,omitempty"`
+	Kind           string         `json:"kind"`
+	StartedAt      string         `json:"started_at"`
+	FinishedAt     string         `json:"finished_at,omitempty"`
+	Status         string         `json:"status"`
+	Inspected      int            `json:"inspected,omitempty"`
+	Applied        int            `json:"applied,omitempty"`
+	ClassCounts    map[string]int `json:"class_counts,omitempty"`
+	AutoEnabled    int            `json:"auto_enabled,omitempty"`
+	AutoDisabled   int            `json:"auto_disabled,omitempty"`
+	AutoFailed     int            `json:"auto_failed,omitempty"`
+	Account        string         `json:"account,omitempty"`
+	Classification string         `json:"classification,omitempty"`
+	HTTPStatus     int            `json:"http_status,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Message        string         `json:"message,omitempty"`
 }
 
 type automationSnapshot struct {
@@ -557,6 +561,8 @@ func (a *automationManager) executeRule(rule automationRule) {
 	}
 	if len(ids) == 0 {
 		history.Status = "success"
+		history.ClassCounts = emptyAutomationClassCounts()
+		history.Message = formatAutomationRunSummary(history)
 		history.FinishedAt = time.Now().Format(time.RFC3339)
 		a.finishRule(rule, started, history, true)
 		return
@@ -589,6 +595,7 @@ func (a *automationManager) executeRule(rule automationRule) {
 		return
 	}
 	history.Inspected = len(ids)
+	history.ClassCounts = automaticClassCounts(ids)
 	if rule.ApplyRecommendations && !engine.snapshot(false).Stopped {
 		err = engine.startApply(applyRequest{AuthIndexes: ids, Actions: []string{"enable", "disable"}, Automatic: true}, resolveManagementPassword(nil), nil)
 		if err == nil {
@@ -602,6 +609,9 @@ func (a *automationManager) executeRule(rule automationRule) {
 			}
 			snap := engine.snapshot(false)
 			history.Applied = snap.ApplyDone
+			history.AutoEnabled = snap.ApplyEnabled
+			history.AutoDisabled = snap.ApplyDisabled
+			history.AutoFailed = snap.ApplyFailed
 			if len(snap.ApplyFailures) > 0 {
 				history.Error = strings.Join(snap.ApplyFailures, "; ")
 			}
@@ -613,7 +623,49 @@ func (a *automationManager) executeRule(rule automationRule) {
 	if history.Error != "" {
 		history.Status = "partial"
 	}
+	history.Message = formatAutomationRunSummary(history)
 	a.finishRule(rule, started, history, true)
+}
+
+func emptyAutomationClassCounts() map[string]int {
+	return map[string]int{"healthy": 0, "permission_denied": 0, "quota_exhausted": 0, "reauth": 0, "other": 0}
+}
+
+func automaticClassCounts(ids []string) map[string]int {
+	counts := emptyAutomationClassCounts()
+	want := stringSet(ids)
+	engine.mu.Lock()
+	results := append([]accountResult(nil), engine.results...)
+	engine.mu.Unlock()
+	for _, item := range results {
+		if !itemSelected(item, want, nil) {
+			continue
+		}
+		switch item.Classification {
+		case "healthy", "permission_denied", "quota_exhausted", "reauth":
+			counts[item.Classification]++
+		default:
+			counts["other"]++
+		}
+	}
+	counted := counts["healthy"] + counts["permission_denied"] + counts["quota_exhausted"] + counts["reauth"] + counts["other"]
+	if counted < len(want) {
+		counts["other"] += len(want) - counted
+	}
+	return counts
+}
+
+func formatAutomationRunSummary(history automationHistory) string {
+	counts := history.ClassCounts
+	if counts == nil {
+		counts = emptyAutomationClassCounts()
+	}
+	return fmt.Sprintf(
+		"巡检 %d 个：健康 %d、权限被拒 %d、额度用尽 %d、需重登 %d、异常 %d；自动禁用 %d、自动启用 %d、失败 %d",
+		history.Inspected,
+		counts["healthy"], counts["permission_denied"], counts["quota_exhausted"], counts["reauth"], counts["other"],
+		history.AutoDisabled, history.AutoEnabled, history.AutoFailed,
+	)
 }
 
 func (a *automationManager) deferRule(rule automationRule, started time.Time, reason string) {

@@ -430,6 +430,9 @@ func (e *inspectionEngine) startApply(req applyRequest, password string, headers
 	e.applyDoneCh = make(chan struct{})
 	e.applyDone = 0
 	e.applyTotal = len(candidates)
+	e.applyEnabled = 0
+	e.applyDisabled = 0
+	e.applyFailed = 0
 	e.applyCurrent = ""
 	e.applyFailures = nil
 	// Capture auth material for the background goroutine (request may free headers after return).
@@ -552,6 +555,7 @@ func (e *inspectionEngine) runApply(candidates []accountResult, password string,
 		e.mu.Lock()
 		if len(batchFails) > 0 {
 			e.applyFailures = append(e.applyFailures, batchFails...)
+			e.applyFailed += len(batchFails)
 		}
 		e.applyDone += len(chunk)
 		if e.applyDone%applyPersistEvery == 0 || end == len(deletes) {
@@ -605,6 +609,11 @@ func (e *inspectionEngine) runApply(candidates []accountResult, password string,
 			e.mu.Lock()
 			if errAction != nil {
 				e.applyFailures = append(e.applyFailures, item.Name+": "+errAction.Error())
+				e.applyFailed++
+			} else if item.Action == "disable" {
+				e.applyDisabled++
+			} else if item.Action == "enable" {
+				e.applyEnabled++
 			}
 			e.applyDone++
 			done := e.applyDone

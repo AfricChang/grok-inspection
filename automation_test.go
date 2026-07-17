@@ -313,6 +313,26 @@ func TestExecuteRuleWaitsForEngineCompletionNotification(t *testing.T) {
 	if snap.RunningRuleID != "" || len(snap.History) != 1 || snap.History[0].Inspected != 1 {
 		t.Fatalf("completion snapshot = %+v", snap)
 	}
+	if !strings.Contains(snap.History[0].Message, "巡检 1 个") || !strings.Contains(snap.History[0].Message, "额度用尽 1") {
+		t.Fatalf("completion summary = %q", snap.History[0].Message)
+	}
+}
+
+func TestFormatAutomationRunSummaryIncludesCategoriesAndActions(t *testing.T) {
+	history := automationHistory{
+		Inspected: 12,
+		ClassCounts: map[string]int{
+			"healthy": 3, "permission_denied": 5, "quota_exhausted": 2, "reauth": 0, "other": 2,
+		},
+		AutoDisabled: 7,
+		AutoEnabled:  1,
+		AutoFailed:   2,
+	}
+	got := formatAutomationRunSummary(history)
+	want := "巡检 12 个：健康 3、权限被拒 5、额度用尽 2、需重登 0、异常 2；自动禁用 7、自动启用 1、失败 2"
+	if got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
 }
 
 func TestRuleDueCatchUpAndCooldownBoundaries(t *testing.T) {

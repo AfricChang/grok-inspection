@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -49,6 +50,50 @@ func TestCallCPAManagementUsesBearerPasswordAndJSON(t *testing.T) {
 	}
 	if status != http.StatusOK {
 		t.Fatalf("status = %d", status)
+	}
+}
+
+func TestAutomaticApplyCountsEnableDisableAndFailures(t *testing.T) {
+	setStoreFilePathForTest(filepath.Join(t.TempDir(), "results.json"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/auth-files/status" {
+			t.Fatalf("unexpected management request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	oldEngine := engine
+	oldBaseURL := cpaManagementBaseURL
+	oldDo := cpaManagementDo
+	engine = &inspectionEngine{
+		workers:   defaultWorkers,
+		automatic: true,
+		results: []accountResult{
+			{AuthIndex: "disable", Name: "disable.json", FileName: "disable.json", Classification: "quota_exhausted", Action: "disable"},
+			{AuthIndex: "enable", Name: "enable.json", FileName: "enable.json", Disabled: true, Classification: "healthy", Action: "enable"},
+		},
+	}
+	cpaManagementBaseURL = server.URL
+	cpaManagementDo = server.Client().Do
+	t.Cleanup(func() {
+		engine.runWG.Wait()
+		engine.persistWG.Wait()
+		engine = oldEngine
+		cpaManagementBaseURL = oldBaseURL
+		cpaManagementDo = oldDo
+		setStoreFilePathForTest("")
+	})
+
+	err := engine.startApply(applyRequest{Actions: []string{"enable", "disable"}, Automatic: true}, "test-key", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-engine.applyCompletion()
+	snap := engine.snapshot(false)
+	if snap.ApplyDone != 2 || snap.ApplyEnabled != 1 || snap.ApplyDisabled != 1 || snap.ApplyFailed != 0 {
+		t.Fatalf("apply counters = %+v", snap)
 	}
 }
 

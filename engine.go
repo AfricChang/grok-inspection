@@ -72,6 +72,9 @@ type jobSnapshot struct {
 	OnlyDisabled    bool     `json:"only_disabled"`
 	ApplyDone       int      `json:"apply_done"`
 	ApplyTotal      int      `json:"apply_total"`
+	ApplyEnabled    int      `json:"apply_enabled"`
+	ApplyDisabled   int      `json:"apply_disabled"`
+	ApplyFailed     int      `json:"apply_failed"`
 	ApplyCurrent    string   `json:"apply_current,omitempty"`
 	ApplyFailures   []string `json:"apply_failures,omitempty"`
 	// ActionInFlight is single-row ops still running (not bulk apply).
@@ -159,6 +162,9 @@ type inspectionEngine struct {
 	results           []accountResult
 	applyDone         int
 	applyTotal        int
+	applyEnabled      int
+	applyDisabled     int
+	applyFailed       int
 	applyCurrent      string
 	applyFailures     []string
 	resultsGen        uint64 // monotonic; used by light /status clients
@@ -364,6 +370,9 @@ func (e *inspectionEngine) snapshotLocked(includeResults bool) jobSnapshot {
 		OnlyDisabled:      e.onlyDisabled,
 		ApplyDone:         e.applyDone,
 		ApplyTotal:        e.applyTotal,
+		ApplyEnabled:      e.applyEnabled,
+		ApplyDisabled:     e.applyDisabled,
+		ApplyFailed:       e.applyFailed,
 		ApplyCurrent:      e.applyCurrent,
 		ApplyFailures:     append([]string(nil), e.applyFailures...),
 		ActionInFlight:    e.actionInFlight,
@@ -476,6 +485,9 @@ func (e *inspectionEngine) start(req startRequest) error {
 	e.probeDone = 0
 	e.applyDone = 0
 	e.applyTotal = 0
+	e.applyEnabled = 0
+	e.applyDisabled = 0
+	e.applyFailed = 0
 	e.applyCurrent = ""
 	e.applyFailures = nil
 	e.startedAt = time.Now()
