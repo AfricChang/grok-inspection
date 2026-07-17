@@ -104,6 +104,14 @@ func renderUIPage(pluginID string) []byte {
     .grok-inspection-page .empty { color:var(--muted) !important; }
     .grok-inspection-page .settings-row,
     .grok-inspection-page .actions-row { display:flex; gap:8px; flex-wrap:wrap; width:100%%; }
+    .automation-panel { margin:16px 0; padding:14px; border:1px solid var(--border); border-radius:14px; background:var(--surface); }
+    .automation-panel h2 { margin:0 0 6px; font-size:18px; }
+    .automation-form { display:grid; grid-template-columns:repeat(6,minmax(110px,1fr)); gap:8px; margin-top:12px; }
+    .automation-form label { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); }
+    .automation-form input { min-width:0; height:36px; border:1px solid var(--input-border); border-radius:8px; padding:0 8px; background:var(--surface); color:var(--text); }
+    .automation-scopes { display:flex; gap:12px; flex-wrap:wrap; margin:10px 0; font-size:13px; }
+    .automation-table { width:100%%; margin-top:10px; }
+    .automation-history { margin-top:10px; font-size:12px; color:var(--muted); white-space:pre-wrap; }
     .grok-inspection-page .settings-row > .ctl,
     .grok-inspection-page .actions-row > button { min-width:0; }
     html[data-grok-theme="dark"] {
@@ -153,6 +161,7 @@ func renderUIPage(pluginID string) []byte {
       .grok-inspection-page .actions-row .hint {
         grid-column:1 / -1; line-height:1.5; overflow-wrap:anywhere;
       }
+      .automation-form { grid-template-columns:repeat(2,minmax(0,1fr)); }
       .grok-inspection-page .pager { align-items:stretch; }
       .grok-inspection-page .pager > div { width:100%%; }
       .grok-inspection-page .pager > div:last-child { justify-content:space-between; }
@@ -196,6 +205,39 @@ func renderUIPage(pluginID string) []byte {
         <pre id="error" class="err" style="margin:0;max-width:min(720px,100%%);text-align:left;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word"></pre>
       </div>
     </div>
+    <section class="automation-panel">
+      <h2>自动巡检</h2>
+      <div class="hint">健康账号通过真实请求的 Usage 失败记录被动检测；定时规则只复检权限被拒、额度用尽和异常账号。自动操作仅允许启用/禁用，永不自动删除。</div>
+      <div class="automation-form">
+        <label>规则名称<input id="autoName" value="问题账号复检"></label>
+        <label>开始时间<input id="autoStart" type="time" value="00:00"></label>
+        <label>结束时间<input id="autoEnd" type="time" value="23:59"></label>
+        <label>间隔（分钟）<input id="autoInterval" type="number" min="15" max="10080" value="120"></label>
+        <label>并发<input id="autoWorkers" type="number" min="1" max="16" value="6"></label>
+        <label>星期（1-7）<input id="autoWeekdays" value="1,2,3,4,5,6,7"></label>
+      </div>
+      <div class="automation-scopes">
+        <label><input id="autoAll" type="checkbox"> 全部问题分类</label>
+        <label><input id="autoPermission" type="checkbox" checked> 权限被拒</label>
+        <label><input id="autoQuota" type="checkbox" checked> 额度用尽</label>
+        <label><input id="autoOther" type="checkbox"> 异常</label>
+        <label><input id="autoIncludeDisabled" type="checkbox" checked> 包含已禁用</label>
+        <label><input id="autoApply" type="checkbox" checked> 自动执行启用/禁用建议</label>
+        <label><input id="autoEnabled" type="checkbox" checked> 启用规则</label>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button id="autoSave" class="primary" type="button">保存规则</button>
+        <button id="autoReset" type="button">新建规则</button>
+        <span id="autoStatus" class="hint"></span>
+      </div>
+      <div style="overflow:auto">
+        <table class="automation-table">
+          <thead><tr><th>规则</th><th>时间窗口</th><th>范围</th><th>下次执行</th><th>状态</th><th>操作</th></tr></thead>
+          <tbody id="autoRules"></tbody>
+        </table>
+      </div>
+      <div id="autoHistory" class="automation-history"></div>
+    </section>
     <div id="confirmModal" class="modal hidden" aria-hidden="true">
       <div class="modal-card" role="dialog" aria-modal="true">
         <div id="confirmTitle" class="modal-title">确认操作</div>
@@ -289,7 +331,9 @@ func renderUIPage(pluginID string) []byte {
     filter: 'all',
     page: 1,
     pageSize: 20,
-    snapshot: { results: [], summary: {}, running: false, applying: false, done: 0, total: 0 }
+    snapshot: { results: [], summary: {}, running: false, applying: false, done: 0, total: 0 },
+    automation: { rules: [], history: [] },
+    editingRuleID: ''
   };
   const $ = (id) => document.getElementById(id);
   const prefsKey = 'grokInspectionPrefs';
@@ -720,6 +764,131 @@ func renderUIPage(pluginID string) []byte {
     if (!res.ok) throw new Error((data && (data.error || data.message)) || text || ('HTTP ' + res.status));
     return data;
   }
+  function automationScopeLabels(scope) {
+    const labels = { permission_denied:'权限被拒', quota_exhausted:'额度用尽', other:'异常', all:'全部问题' };
+    return (scope || []).map((value) => labels[value] || value).join('、');
+  }
+  function resetAutomationForm() {
+    state.editingRuleID = '';
+    $('autoName').value = '问题账号复检';
+    $('autoStart').value = '00:00';
+    $('autoEnd').value = '23:59';
+    $('autoInterval').value = '120';
+    $('autoWorkers').value = String(WORKERS_DEFAULT);
+    $('autoWeekdays').value = '1,2,3,4,5,6,7';
+    $('autoPermission').checked = true;
+    $('autoQuota').checked = true;
+    $('autoOther').checked = false;
+    $('autoAll').checked = false;
+    $('autoIncludeDisabled').checked = true;
+    $('autoApply').checked = true;
+    $('autoEnabled').checked = true;
+    $('autoSave').textContent = '保存规则';
+  }
+  function editAutomationRule(rule) {
+    state.editingRuleID = rule.id || '';
+    $('autoName').value = rule.name || '';
+    $('autoStart').value = rule.window_start || '00:00';
+    $('autoEnd').value = rule.window_end || '23:59';
+    $('autoInterval').value = String(rule.interval_minutes || 120);
+    $('autoWorkers').value = String(rule.workers || WORKERS_DEFAULT);
+    $('autoWeekdays').value = (rule.weekdays || [1,2,3,4,5,6,7]).join(',');
+    const scope = rule.scope || [];
+    $('autoAll').checked = scope.includes('all');
+    $('autoPermission').checked = scope.includes('permission_denied') || scope.includes('all');
+    $('autoQuota').checked = scope.includes('quota_exhausted') || scope.includes('all');
+    $('autoOther').checked = scope.includes('other') || scope.includes('all');
+    $('autoIncludeDisabled').checked = !!rule.include_disabled;
+    $('autoApply').checked = !!rule.apply_recommendations;
+    $('autoEnabled').checked = !!rule.enabled;
+    $('autoSave').textContent = '更新规则';
+  }
+  function renderAutomation() {
+    const data = state.automation || {};
+    const rules = data.rules || [];
+    $('autoStatus').textContent = data.running_rule_name
+      ? ('正在执行：' + data.running_rule_name)
+      : ('时区：' + (data.time_zone || '本机'));
+    $('autoRules').innerHTML = rules.length ? rules.map((rule) => {
+      const running = data.running_rule_id === rule.id;
+      return '<tr><td>' + escapeHtml(rule.name) + '</td>' +
+        '<td>' + escapeHtml(rule.window_start + '～' + rule.window_end + ' / ' + rule.interval_minutes + ' 分钟') + '</td>' +
+        '<td>' + escapeHtml(automationScopeLabels(rule.scope)) + '</td>' +
+        '<td>' + escapeHtml(rule.next_run_at || '-') + '</td>' +
+        '<td>' + (running ? '执行中' : (rule.enabled ? '已启用' : '已停用')) + '</td>' +
+        '<td><button data-auto="edit" data-id="' + escapeHtml(rule.id) + '">编辑</button> ' +
+        '<button data-auto="run" data-id="' + escapeHtml(rule.id) + '"' + (running?' disabled':'') + '>立即执行</button> ' +
+        '<button data-auto="delete" data-id="' + escapeHtml(rule.id) + '" class="danger"' + (running?' disabled':'') + '>删除规则</button></td></tr>';
+    }).join('') : '<tr><td colspan="6">尚未配置自动巡检规则</td></tr>';
+    $('autoRules').querySelectorAll('[data-auto]').forEach((button) => {
+      button.onclick = async () => {
+        const id = button.dataset.id;
+        const rule = rules.find((item) => item.id === id);
+        if (button.dataset.auto === 'edit' && rule) {
+          editAutomationRule(rule);
+          return;
+        }
+        try {
+          if (button.dataset.auto === 'run') {
+            await api('/automation/run', { method:'POST', body:JSON.stringify({id}) });
+            showOk('自动巡检已启动：' + (rule ? rule.name : id));
+          } else if (button.dataset.auto === 'delete') {
+            const ok = await confirmDialog('删除规则', '只删除自动巡检规则，不会删除任何账号。确认继续？');
+            if (!ok) return;
+            await api('/automation/rules?id=' + encodeURIComponent(id), { method:'DELETE' });
+          }
+          await loadAutomation(true);
+        } catch (e) { showErr(String(e.message || e)); }
+      };
+    });
+    const history = data.history || [];
+    const statusLabels = { detected:'已检测', applied:'已执行', failed:'失败', success:'成功', partial:'部分完成', skipped:'已跳过', running:'执行中' };
+    $('autoHistory').textContent = history.length
+      ? ('最近记录：\n' + history.slice(0, 8).map((item) => {
+          const target = item.rule_name || item.account || '-';
+          return (item.started_at || '') + ' · ' + target + ' · ' + (item.message || statusLabels[item.status] || item.status) +
+            (!item.message && item.classification ? ' · ' + (classLabel[item.classification] || item.classification) : '') +
+            (item.error ? ' · ' + item.error : '');
+        }).join('\n'))
+      : '暂无自动巡检记录';
+  }
+  async function loadAutomation(includeHistory) {
+    if (!hasManagementKey()) return;
+    const data = await api(includeHistory ? '/automation/history' : '/automation', { method:'GET' });
+    state.automation = data || { rules:[], history:[] };
+    lastAutomationAt = Date.now();
+    renderAutomation();
+  }
+  async function saveAutomationRule() {
+    const scope = [];
+    if ($('autoAll').checked) {
+      scope.push('all');
+    } else {
+      if ($('autoPermission').checked) scope.push('permission_denied');
+      if ($('autoQuota').checked) scope.push('quota_exhausted');
+      if ($('autoOther').checked) scope.push('other');
+    }
+    const weekdays = String($('autoWeekdays').value || '').split(',').map((v) => Number(v.trim())).filter((v) => Number.isInteger(v));
+    const rule = {
+      id: state.editingRuleID || '',
+      name: $('autoName').value.trim(),
+      enabled: $('autoEnabled').checked,
+      weekdays,
+      window_start: $('autoStart').value,
+      window_end: $('autoEnd').value,
+      interval_minutes: Number($('autoInterval').value),
+      scope,
+      workers: Number($('autoWorkers').value),
+      include_disabled: $('autoIncludeDisabled').checked,
+      apply_recommendations: $('autoApply').checked
+    };
+    try {
+      await api('/automation/rules', { method:'POST', body:JSON.stringify(rule) });
+      showOk('自动巡检规则已保存');
+      resetAutomationForm();
+      await loadAutomation(true);
+    } catch (e) { showErr(String(e.message || e)); }
+  }
   function filtered() {
     const rows = state.snapshot.results || [];
     if (state.filter === 'all') return rows;
@@ -816,6 +985,21 @@ func renderUIPage(pluginID string) []byte {
   }
   function render() {
     const snap = state.snapshot || {};
+    if (snap.automatic && (snap.running || snap.applying)) {
+      const activeClasses = Array.isArray(snap.classifications) ? snap.classifications : [];
+      const nextFilter = activeClasses.length === 1
+        ? (activeClasses[0] === 'other' ? 'other' : activeClasses[0])
+        : 'all';
+      if (state.filter !== nextFilter) {
+        state.filter = nextFilter;
+        state.page = 1;
+      }
+      $('autoStatus').textContent = snap.applying
+        ? ('自动巡检已完成检测，正在执行建议操作：' + (snap.automatic_rule_name || '自动规则'))
+        : ('自动巡检进行中：' + (snap.automatic_rule_name || '自动规则'));
+    } else if (snap.automatic && snap.stopped) {
+      $('autoStatus').textContent = '自动巡检已停止：' + (snap.automatic_rule_name || '自动规则');
+    }
     const summary = snap.summary || {};
     const cards = [
       ['total','全部', summary.total || 0],
@@ -930,13 +1114,13 @@ func renderUIPage(pluginID string) []byte {
     if (!hasManagementKey()) {
       setProgress('请输入 CPA Management Key 后加载巡检状态', false);
     } else if (snap.applying) {
-      let msg = '后台执行操作 ' + (snap.apply_done||0) + '/' + (snap.apply_total||0) + (snap.apply_current ? '：' + snap.apply_current : '');
+      let msg = (snap.automatic ? '自动巡检执行建议操作 ' : '后台执行操作 ') + (snap.apply_done||0) + '/' + (snap.apply_total||0) + (snap.apply_current ? '：' + snap.apply_current : '');
       if ((snap.apply_failures || []).length) msg += '；失败 ' + snap.apply_failures.length;
       setProgress(msg, true);
     } else if (snap.running) {
       const scoped = Array.isArray(snap.classifications) && snap.classifications.length > 0;
-      const mode = scoped ? '分类巡检中' : (snap.incremental ? '增量巡检中' : '巡检中');
-      const extra = scoped ? '（仅当前分类，保留其他结果）' : (snap.incremental ? '（仅新增，保留已有结果）' : '（后台继续）');
+      const mode = snap.automatic ? ('自动巡检中：' + (snap.automatic_rule_name || '自动规则')) : (scoped ? '分类巡检中' : (snap.incremental ? '增量巡检中' : '巡检中'));
+      const extra = snap.automatic ? '（按当前自动规则范围）' : (scoped ? '（仅当前分类，保留其他结果）' : (snap.incremental ? '（仅新增，保留已有结果）' : '（后台继续）'));
       setProgress(mode + ' ' + (snap.done||0) + '/' + (snap.total||0) + ' · 并发 ' + (snap.workers||WORKERS_DEFAULT) + extra, true);
     } else if (snap.stopped) {
       const scoped = Array.isArray(snap.classifications) && snap.classifications.length > 0;
@@ -968,6 +1152,9 @@ func renderUIPage(pluginID string) []byte {
   let lastResultsGen = 0;
   let lastFullResultsAt = 0;
   let fullResultsSyncing = false;
+  let passiveSyncing = false;
+  let lastAutomationAt = 0;
+  const PASSIVE_POLL_MS = 4000;
   function stopPolling() {
     if (pollTimer != null) {
       clearInterval(pollTimer);
@@ -1044,6 +1231,7 @@ func renderUIPage(pluginID string) []byte {
       // Job just finished → pull full results once (list may have changed a lot).
       if (wasBusy && !busy) {
         await syncFullResults(true);
+        await loadAutomation(true);
         return;
       }
       // Keep the account table live during inspection without sending the full
@@ -1059,6 +1247,26 @@ func renderUIPage(pluginID string) []byte {
       showErr(String(e.message || e));
       // Keep polling only if we still believe a job is active.
       syncPolling(state.snapshot);
+    }
+  }
+  async function refreshPassiveUsage() {
+    if (passiveSyncing || !hasManagementKey() || lastJobBusy) return;
+    passiveSyncing = true;
+    try {
+      const data = await api('/status?include_results=0', { method:'GET' });
+      const gen = Number(data && data.results_gen) || 0;
+      mergeLightStatus(data);
+      render();
+      if (gen && gen !== lastResultsGen) {
+        await syncFullResults(true);
+        await loadAutomation(true);
+      } else if (Date.now() - lastAutomationAt >= PASSIVE_POLL_MS) {
+        await loadAutomation(true);
+      }
+    } catch (_) {
+      // The normal refresh path will surface authentication/server errors.
+    } finally {
+      passiveSyncing = false;
     }
   }
   function wireExclusive() {
@@ -1113,6 +1321,8 @@ func renderUIPage(pluginID string) []byte {
   $('batchEnableBtn').onclick = () => batchForce('enable');
   $('batchDeleteBtn').onclick = () => batchForce('delete');
   $('batchExportBtn').onclick = () => batchExport();
+  $('autoSave').onclick = () => saveAutomationRule();
+  $('autoReset').onclick = () => resetAutomationForm();
   $('confirmOk').onclick = () => closeConfirm(true);
   $('confirmCancel').onclick = () => closeConfirm(false);
   $('confirmModal').addEventListener('click', (ev) => {
@@ -1121,6 +1331,8 @@ func renderUIPage(pluginID string) []byte {
   wireExclusive();
   // One-shot load on open; polling starts only when status reports running/applying.
   refresh();
+  if (hasManagementKey()) loadAutomation(true).catch((e) => showErr(String(e.message || e)));
+  setInterval(refreshPassiveUsage, PASSIVE_POLL_MS);
   </script>
 </body>
 </html>`, base)

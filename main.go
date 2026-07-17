@@ -12,7 +12,7 @@ import (
 
 const (
 	pluginName            = "grok-inspection"
-	pluginVersion         = "0.1.11"
+	pluginVersion         = "0.2.2"
 	resourceContentType   = "text/html; charset=utf-8"
 	jsonContentType       = "application/json; charset=utf-8"
 	managementRoutePrefix = "/plugins/" + pluginName
@@ -26,6 +26,7 @@ type registration struct {
 
 type registrationCapabilities struct {
 	ManagementAPI bool `json:"management_api"`
+	UsagePlugin   bool `json:"usage_plugin"`
 }
 
 func handleMethod(method string, request []byte) ([]byte, error) {
@@ -36,6 +37,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(managementRegistration())
 	case pluginabi.MethodManagementHandle:
 		return handleManagement(request)
+	case pluginabi.MethodUsageHandle:
+		return handleUsage(request)
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -51,7 +54,7 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/ywddd/grok-inspection",
 			ConfigFields:     []pluginapi.ConfigField{},
 		},
-		Capabilities: registrationCapabilities{ManagementAPI: true},
+		Capabilities: registrationCapabilities{ManagementAPI: true, UsagePlugin: true},
 	}
 }
 
@@ -63,6 +66,11 @@ func managementRegistration() pluginapi.ManagementRegistrationResponse {
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/stop", Description: "Stop the current Grok inspection job."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/apply", Description: "Apply recommended disable/enable/delete actions asynchronously."},
 			{Method: http.MethodPost, Path: managementRoutePrefix + "/action", Description: "Disable, enable, or delete one Grok credential asynchronously."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/automation", Description: "Get automatic inspection rules and runtime status."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/automation/rules", Description: "Create or update an automatic inspection rule."},
+			{Method: http.MethodDelete, Path: managementRoutePrefix + "/automation/rules", Description: "Delete an automatic inspection rule."},
+			{Method: http.MethodPost, Path: managementRoutePrefix + "/automation/run", Description: "Run one automatic inspection rule immediately."},
+			{Method: http.MethodGet, Path: managementRoutePrefix + "/automation/history", Description: "Get automatic inspection history."},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{
@@ -85,6 +93,10 @@ func handleManagement(raw []byte) ([]byte, error) {
 }
 
 func dispatchManagement(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
+	// Management routes are already authenticated by CPA. Cache the key in memory
+	// so asynchronous Usage callbacks can perform enable/disable without requiring
+	// a process restart solely to add MANAGEMENT_PASSWORD.
+	rememberManagementPassword(req.Headers)
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	if method == "" {
 		method = http.MethodGet
@@ -170,6 +182,49 @@ func dispatchManagement(req pluginapi.ManagementRequest) pluginapi.ManagementRes
 			"action_seq": seq,
 			"name":       firstNonEmpty(body.Name, body.AuthIndex),
 		})
+	case method == http.MethodGet && matchesManagementPath(req.Path, "/automation"):
+		return jsonResponse(http.StatusOK, automation.snapshot(false))
+	case method == http.MethodGet && matchesManagementPath(req.Path, "/automation/history"):
+		return jsonResponse(http.StatusOK, automation.snapshot(true))
+	case method == http.MethodPost && matchesManagementPath(req.Path, "/automation/rules"):
+		var rule automationRule
+		if len(req.Body) > 0 {
+			if err := json.Unmarshal(req.Body, &rule); err != nil {
+				return jsonResponse(http.StatusBadRequest, map[string]any{"error": err.Error()})
+			}
+		}
+		saved, err := automation.upsertRule(rule)
+		if err != nil {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"error": err.Error()})
+		}
+		return jsonResponse(http.StatusOK, saved)
+	case method == http.MethodDelete && matchesManagementPath(req.Path, "/automation/rules"):
+		id := ""
+		if req.Query != nil {
+			id = req.Query.Get("id")
+		}
+		if id == "" && len(req.Body) > 0 {
+			var body struct {
+				ID string `json:"id"`
+			}
+			_ = json.Unmarshal(req.Body, &body)
+			id = body.ID
+		}
+		if err := automation.deleteRule(id); err != nil {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"error": err.Error()})
+		}
+		return jsonResponse(http.StatusOK, map[string]any{"ok": true})
+	case method == http.MethodPost && matchesManagementPath(req.Path, "/automation/run"):
+		var body struct {
+			ID string `json:"id"`
+		}
+		if len(req.Body) > 0 {
+			_ = json.Unmarshal(req.Body, &body)
+		}
+		if err := automation.runRule(body.ID, true); err != nil {
+			return jsonResponse(http.StatusConflict, map[string]any{"error": err.Error()})
+		}
+		return jsonResponse(http.StatusAccepted, map[string]any{"ok": true, "accepted": true})
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"error": "not found", "path": req.Path, "method": method})
 	}
@@ -226,4 +281,3 @@ func jsonResponse(statusCode int, payload any) pluginapi.ManagementResponse {
 		Body:       raw,
 	}
 }
-

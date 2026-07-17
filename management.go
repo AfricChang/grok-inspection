@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +22,11 @@ var (
 		return cpaManagementClient.Do(req)
 	}
 )
+
+var managementPasswordCache = struct {
+	sync.RWMutex
+	value string
+}{}
 
 func newManagementHTTPClient() *http.Client {
 	return &http.Client{
@@ -98,22 +104,58 @@ func extractBearerToken(headers http.Header) string {
 
 func resolveManagementPassword(headers http.Header) string {
 	if headers == nil {
-		return strings.TrimSpace(cpaManagementPassword())
+		if value := strings.TrimSpace(cpaManagementPassword()); value != "" {
+			return value
+		}
+		managementPasswordCache.RLock()
+		defer managementPasswordCache.RUnlock()
+		return managementPasswordCache.value
 	}
 	if token := extractBearerToken(headers); token != "" {
+		rememberManagementPasswordValue(token)
 		return token
 	}
 	if token := strings.TrimSpace(headers.Get("X-Management-Key")); token != "" {
+		rememberManagementPasswordValue(token)
 		return token
 	}
 	for key, values := range headers {
 		if strings.EqualFold(strings.TrimSpace(key), "X-Management-Key") && len(values) > 0 {
 			if token := strings.TrimSpace(values[0]); token != "" {
+				rememberManagementPasswordValue(token)
 				return token
 			}
 		}
 	}
-	return strings.TrimSpace(cpaManagementPassword())
+	if value := strings.TrimSpace(cpaManagementPassword()); value != "" {
+		return value
+	}
+	managementPasswordCache.RLock()
+	defer managementPasswordCache.RUnlock()
+	return managementPasswordCache.value
+}
+
+func rememberManagementPassword(headers http.Header) {
+	if headers == nil {
+		return
+	}
+	if token := extractBearerToken(headers); token != "" {
+		rememberManagementPasswordValue(token)
+		return
+	}
+	if token := headerValue(headers, "X-Management-Key"); token != "" {
+		rememberManagementPasswordValue(token)
+	}
+}
+
+func rememberManagementPasswordValue(value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	managementPasswordCache.Lock()
+	managementPasswordCache.value = value
+	managementPasswordCache.Unlock()
 }
 
 func managementTLSPreferred() bool {

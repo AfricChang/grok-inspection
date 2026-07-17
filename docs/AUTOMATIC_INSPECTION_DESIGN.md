@@ -1,8 +1,8 @@
 # 自动巡检设计方案
 
-状态：待审核
+状态：第一版已实现，待运行环境验收
 
-本文档描述 Grok Inspection CPA 插件自动巡检的产品和技术方案。本阶段只确定设计，不包含代码实现。
+本文档描述 Grok Inspection CPA 插件自动巡检的产品和技术方案，并记录第一版实现后的实际接口与验收边界。
 
 ## 1. 目标与边界
 
@@ -65,6 +65,8 @@
 CPA 当前版本支持插件 `UsagePlugin`。xAI 执行器在真实请求完成后，会向插件发送 Usage 记录；成功和失败请求都会发送。失败记录包含 `Provider`、`AuthID`、`AuthIndex`、HTTP 状态码和错误正文，因此插件可以准确定位产生错误的 Grok 账号。
 
 健康账号不再通过自动规则主动发起探测。普通 HTTP 429、5xx、超时和连接错误不能直接判定为额度用尽；只有包含 Grok 明确免费额度耗尽标识的失败记录才能归类为 `quota_exhausted`。Usage 回调必须快速返回，账号状态写入和禁用操作异步执行，不能阻塞真实业务请求。
+
+自动禁用优先复用已认证管理请求中的 Management Key（仅进程内存缓存，不落盘）；如果 CPA 进程配置了 `MANAGEMENT_PASSWORD` 或 `CPA_MANAGEMENT_KEY`，则作为无页面场景的后备来源。两者都没有时仍记录识别结果，但自动禁用会记录失败原因。
 
 CPA 可能在一个请求中先后尝试多个账号。插件必须按每条 Usage 记录的 `AuthIndex` 独立处理，不能只根据最终请求是否成功判断账号状态。
 
@@ -173,7 +175,7 @@ data/grok-inspection/
 └── automation-history.json
 ```
 
-`automation.json` 保存规则、调度器状态和账号自动巡检时间字段。`automation-history.json` 只保留最近约 50 次执行摘要，例如：
+`automation.json` 保存规则和调度器状态；账号自动巡检时间字段保存在 `results.json` 的账号结果中。`automation-history.json` 只保留最近约 50 次执行摘要，例如：
 
 - 规则名称
 - 计划时间和实际开始时间
@@ -198,14 +200,13 @@ auto_inspect_exclude_reason
 
 ## 7. 管理接口和页面
 
-建议新增管理接口：
+已实现的管理接口：
 
 ```text
 GET    /automation
-POST   /automation/rules
-PUT    /automation/rules/:id
-DELETE /automation/rules/:id
-POST   /automation/rules/:id/run
+POST   /automation/rules       # body 中带 id 时更新，否则创建
+DELETE /automation/rules?id=...
+POST   /automation/run         # body: {"id":"..."}
 GET    /automation/history
 ```
 
@@ -216,11 +217,15 @@ GET    /automation/history
 - 最近一次执行摘要
 - 立即执行、编辑、停用、删除规则
 
+当自动任务运行时，顶部分类卡片、当前筛选、并发、检测进度和自动巡检状态必须跟随实际运行规则更新；自动任务完成检测进入建议操作阶段时，进度文案也要切换为自动操作进度，不能继续显示上一次手工巡检分类。
+
+页面空闲时仍以低频轻量状态请求监听 `results_gen`。Usage 被动检测写入新分类或自动禁用更新账号状态后，页面应自动拉取完整结果，实时更新顶部分类数量和账号列表；同时刷新最近记录，输出“检测到额度用尽”“自动禁用成功”或具体失败原因。
+
 编辑规则时明确提示：自动操作只包含启用和禁用，永不自动删除账号；需重登账号不会进入自动巡检。
 
-## 8. 实现拆分建议
+## 8. 实现拆分与验收
 
-后续实现建议按以下顺序进行：
+实现已按以下顺序完成：
 
 1. 增加规则模型、校验和独立落盘。
 2. 增加调度器生命周期，并接入插件初始化、重配置和关闭流程。

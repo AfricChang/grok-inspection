@@ -23,22 +23,26 @@ const (
 )
 
 type accountResult struct {
-	AuthIndex      string `json:"auth_index"`
-	Name           string `json:"name"`
-	FileName       string `json:"file_name,omitempty"`
-	Email          string `json:"email,omitempty"`
+	AuthIndex string `json:"auth_index"`
+	Name      string `json:"name"`
+	FileName  string `json:"file_name,omitempty"`
+	Email     string `json:"email,omitempty"`
 	// FileID / FileModUnix / FileSize help incremental skip without relying on email/name.
-	FileID      string `json:"file_id,omitempty"`
-	FileModUnix int64  `json:"file_mod_unix,omitempty"`
-	FileSize    int64  `json:"file_size,omitempty"`
-	Disabled       bool   `json:"disabled"`
-	Classification string `json:"classification"`
-	Action         string `json:"action"`
-	Reason         string `json:"reason"`
-	HTTPStatus     int    `json:"http_status,omitempty"`
-	Model          string `json:"model,omitempty"`
-	ErrorCode      string `json:"error_code,omitempty"`
-	ErrorMessage   string `json:"error_message,omitempty"`
+	FileID                   string `json:"file_id,omitempty"`
+	FileModUnix              int64  `json:"file_mod_unix,omitempty"`
+	FileSize                 int64  `json:"file_size,omitempty"`
+	Disabled                 bool   `json:"disabled"`
+	Classification           string `json:"classification"`
+	Action                   string `json:"action"`
+	Reason                   string `json:"reason"`
+	HTTPStatus               int    `json:"http_status,omitempty"`
+	Model                    string `json:"model,omitempty"`
+	ErrorCode                string `json:"error_code,omitempty"`
+	ErrorMessage             string `json:"error_message,omitempty"`
+	LastInspectedAt          string `json:"last_inspected_at,omitempty"`
+	NextInspectAt            string `json:"next_inspect_at,omitempty"`
+	AutoInspectExcluded      bool   `json:"auto_inspect_excluded,omitempty"`
+	AutoInspectExcludeReason string `json:"auto_inspect_exclude_reason,omitempty"`
 }
 
 // rowActionReport is a lightweight completion record for single-row /action.
@@ -52,21 +56,24 @@ type rowActionReport struct {
 }
 
 type jobSnapshot struct {
-	Running         bool            `json:"running"`
-	Stopped         bool            `json:"stopped"`
-	Applying        bool            `json:"applying"`
-	Incremental     bool            `json:"incremental"`
+	Running           bool   `json:"running"`
+	Stopped           bool   `json:"stopped"`
+	Applying          bool   `json:"applying"`
+	Incremental       bool   `json:"incremental"`
+	Automatic         bool   `json:"automatic"`
+	AutomaticRuleID   string `json:"automatic_rule_id,omitempty"`
+	AutomaticRuleName string `json:"automatic_rule_name,omitempty"`
 	// Classifications is set when this run re-probes only matching last classifications.
-	Classifications []string        `json:"classifications,omitempty"`
-	Done            int             `json:"done"`
-	Total           int             `json:"total"`
-	Workers         int             `json:"workers"`
-	IncludeDisabled bool            `json:"include_disabled"`
-	OnlyDisabled    bool            `json:"only_disabled"`
-	ApplyDone       int             `json:"apply_done"`
-	ApplyTotal      int             `json:"apply_total"`
-	ApplyCurrent    string          `json:"apply_current,omitempty"`
-	ApplyFailures   []string        `json:"apply_failures,omitempty"`
+	Classifications []string `json:"classifications,omitempty"`
+	Done            int      `json:"done"`
+	Total           int      `json:"total"`
+	Workers         int      `json:"workers"`
+	IncludeDisabled bool     `json:"include_disabled"`
+	OnlyDisabled    bool     `json:"only_disabled"`
+	ApplyDone       int      `json:"apply_done"`
+	ApplyTotal      int      `json:"apply_total"`
+	ApplyCurrent    string   `json:"apply_current,omitempty"`
+	ApplyFailures   []string `json:"apply_failures,omitempty"`
 	// ActionInFlight is single-row ops still running (not bulk apply).
 	ActionInFlight int `json:"action_in_flight"`
 	// RecentRowActions holds latest completed single-row ops for light confirmation.
@@ -92,6 +99,12 @@ type startRequest struct {
 	// (not healthy / permission_denied / quota_exhausted / reauth).
 	// Mutually exclusive with Incremental.
 	Classifications []string `json:"classifications"`
+	// AuthIndexes optionally narrows a classify-scoped run to exact accounts.
+	// It is used by automation after cooldown filtering and is not needed by the UI.
+	AuthIndexes       []string `json:"auth_indexes,omitempty"`
+	Automatic         bool     `json:"-"`
+	AutomaticRuleID   string   `json:"-"`
+	AutomaticRuleName string   `json:"-"`
 }
 
 type applyRequest struct {
@@ -102,6 +115,8 @@ type applyRequest struct {
 	// ForceAction overrides recommended action for selected accounts.
 	// Used by filter-based bulk disable/delete. Values: disable | enable | delete
 	ForceAction string `json:"force_action"`
+	// Automatic is internal-only and enforces the no-delete automation boundary.
+	Automatic bool `json:"-"`
 }
 
 type actionRequest struct {
@@ -116,33 +131,36 @@ type authListResponse struct {
 }
 
 type inspectionEngine struct {
-	mu              sync.Mutex
-	runWG           sync.WaitGroup
-	running         bool
-	stopped         bool
-	applying        bool
-	actionInFlight  int // concurrent single-row enable/disable/delete goroutines
-	actionSeq       uint64
-	recentRowActions []rowActionReport // ring of latest completed single-row ops
-	incremental     bool
-	classifications []string // current/last scoped re-inspect classes
-	runID           uint64
-	workers         int
-	includeDisabled bool
-	onlyDisabled    bool
-	total           int
-	probeDone       int // probes completed in the current run (full or incremental)
-	results         []accountResult
-	applyDone       int
-	applyTotal      int
-	applyCurrent    string
-	applyFailures   []string
-	resultsGen      uint64 // monotonic; used by light /status clients
-	startedAt       time.Time
-	finishedAt      time.Time
+	mu                sync.Mutex
+	runWG             sync.WaitGroup
+	running           bool
+	stopped           bool
+	applying          bool
+	actionInFlight    int // concurrent single-row enable/disable/delete goroutines
+	actionSeq         uint64
+	recentRowActions  []rowActionReport // ring of latest completed single-row ops
+	incremental       bool
+	automatic         bool
+	automaticRuleID   string
+	automaticRuleName string
+	classifications   []string // current/last scoped re-inspect classes
+	runID             uint64
+	workers           int
+	includeDisabled   bool
+	onlyDisabled      bool
+	total             int
+	probeDone         int // probes completed in the current run (full or incremental)
+	results           []accountResult
+	applyDone         int
+	applyTotal        int
+	applyCurrent      string
+	applyFailures     []string
+	resultsGen        uint64 // monotonic; used by light /status clients
+	startedAt         time.Time
+	finishedAt        time.Time
 	// Current-run bookkeeping for immediate stop (filled when targets are known).
-	runTargets      []pluginapi.HostAuthFileEntry
-	runModel        string
+	runTargets        []pluginapi.HostAuthFileEntry
+	runModel          string
 	runClassifyScoped bool
 }
 
@@ -269,26 +287,29 @@ func (e *inspectionEngine) snapshot(includeResults bool) jobSnapshot {
 func (e *inspectionEngine) snapshotLocked(includeResults bool) jobSnapshot {
 	summary := summarizeResults(e.results)
 	snap := jobSnapshot{
-		Running:          e.running,
-		Stopped:          e.stopped && !e.running,
-		Applying:         e.applying,
-		Incremental:      e.incremental,
-		Classifications:  append([]string(nil), e.classifications...),
-		Done:             e.probeDone,
-		Total:            e.total,
-		Workers:          e.workers,
-		IncludeDisabled:  e.includeDisabled,
-		OnlyDisabled:     e.onlyDisabled,
-		ApplyDone:        e.applyDone,
-		ApplyTotal:       e.applyTotal,
-		ApplyCurrent:     e.applyCurrent,
-		ApplyFailures:    append([]string(nil), e.applyFailures...),
-		ActionInFlight:   e.actionInFlight,
-		RecentRowActions: append([]rowActionReport(nil), e.recentRowActions...),
-		Summary:          summary,
-		StorePath:        storeFilePath(),
-		ResultsGen:       e.resultsGen,
-		IncludeResults:   includeResults,
+		Running:           e.running,
+		Stopped:           e.stopped && !e.running,
+		Applying:          e.applying,
+		Incremental:       e.incremental,
+		Automatic:         e.automatic,
+		AutomaticRuleID:   e.automaticRuleID,
+		AutomaticRuleName: e.automaticRuleName,
+		Classifications:   append([]string(nil), e.classifications...),
+		Done:              e.probeDone,
+		Total:             e.total,
+		Workers:           e.workers,
+		IncludeDisabled:   e.includeDisabled,
+		OnlyDisabled:      e.onlyDisabled,
+		ApplyDone:         e.applyDone,
+		ApplyTotal:        e.applyTotal,
+		ApplyCurrent:      e.applyCurrent,
+		ApplyFailures:     append([]string(nil), e.applyFailures...),
+		ActionInFlight:    e.actionInFlight,
+		RecentRowActions:  append([]rowActionReport(nil), e.recentRowActions...),
+		Summary:           summary,
+		StorePath:         storeFilePath(),
+		ResultsGen:        e.resultsGen,
+		IncludeResults:    includeResults,
 	}
 	if includeResults {
 		snap.Results = append([]accountResult(nil), e.results...)
@@ -349,8 +370,9 @@ func (e *inspectionEngine) start(req startRequest) error {
 	if classifyScoped {
 		matched := 0
 		classSet := stringSet(classifications)
+		indexSet := stringSet(req.AuthIndexes)
 		for _, item := range e.results {
-			if classificationMatches(item.Classification, classSet) {
+			if classificationMatches(item.Classification, classSet) && itemSelected(item, indexSet, nil) {
 				matched++
 			}
 		}
@@ -371,6 +393,9 @@ func (e *inspectionEngine) start(req startRequest) error {
 	e.runModel = ""
 	e.runClassifyScoped = false
 	e.incremental = req.Incremental && !classifyScoped
+	e.automatic = req.Automatic
+	e.automaticRuleID = strings.TrimSpace(req.AutomaticRuleID)
+	e.automaticRuleName = strings.TrimSpace(req.AutomaticRuleName)
 	e.classifications = classifications
 	e.workers = workers
 	e.includeDisabled = includeDisabled
@@ -397,9 +422,20 @@ func (e *inspectionEngine) start(req startRequest) error {
 	e.runWG.Add(1)
 	go func() {
 		defer e.runWG.Done()
-		e.run(runID, workers, includeDisabled, onlyDisabled, incremental, classifications)
+		e.run(runID, workers, includeDisabled, onlyDisabled, incremental, classifications, req.AuthIndexes)
 	}()
 	return nil
+}
+
+func (e *inspectionEngine) clearAutomationContext(ruleID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ruleID != "" && e.automaticRuleID != ruleID {
+		return
+	}
+	e.automatic = false
+	e.automaticRuleID = ""
+	e.automaticRuleName = ""
 }
 
 // stop aborts the job immediately for the UI:
@@ -475,6 +511,7 @@ func (e *inspectionEngine) appendResult(runID uint64, result accountResult) {
 	if e.runID != runID || e.stopped {
 		return
 	}
+	result = stampInspectionResult(result, time.Now())
 	e.results = append(e.results, result)
 	e.probeDone++
 	e.bumpResultsLocked()
@@ -493,6 +530,7 @@ func (e *inspectionEngine) upsertResult(runID uint64, result accountResult) {
 	if e.runID != runID || e.stopped {
 		return
 	}
+	result = stampInspectionResult(result, time.Now())
 	if idx := findResultIndex(e.results, result); idx >= 0 {
 		e.results[idx] = result
 	} else {
@@ -523,7 +561,7 @@ func (e *inspectionEngine) finish(runID uint64) {
 // Prefer stable auth_index only. Never use email/display name alone (re-import
 // with a new token would incorrectly skip). Without auth_index, fall back to
 // file_name + size + mtime (or file id) so a rewritten file is re-probed.
-func (e *inspectionEngine) run(runID uint64, workers int, includeDisabled, onlyDisabled, incremental bool, classifications []string) {
+func (e *inspectionEngine) run(runID uint64, workers int, includeDisabled, onlyDisabled, incremental bool, classifications, authIndexes []string) {
 	defer e.finish(runID)
 
 	list, errList := callHostAuthList()
@@ -554,10 +592,11 @@ func (e *inspectionEngine) run(runID uint64, workers int, includeDisabled, onlyD
 	var targets []pluginapi.HostAuthFileEntry
 	var missing []accountResult
 	if classifyScoped {
+		indexSet := stringSet(authIndexes)
 		e.mu.Lock()
 		selected := make([]accountResult, 0)
 		for _, item := range e.results {
-			if classificationMatches(item.Classification, classSet) {
+			if classificationMatches(item.Classification, classSet) && itemSelected(item, indexSet, nil) {
 				selected = append(selected, item)
 			}
 		}
@@ -655,3 +694,18 @@ func (e *inspectionEngine) run(runID uint64, workers int, includeDisabled, onlyD
 	wg.Wait()
 }
 
+func stampInspectionResult(result accountResult, now time.Time) accountResult {
+	if result.LastInspectedAt == "" {
+		result.LastInspectedAt = now.Format(time.RFC3339)
+	}
+	result.NextInspectAt = nextAutomaticInspectAt(result.Classification, now)
+	if result.Classification == "reauth" {
+		result.AutoInspectExcluded = true
+		result.AutoInspectExcludeReason = "需重登"
+		// Automatic paths never delete credentials.
+	} else {
+		result.AutoInspectExcluded = false
+		result.AutoInspectExcludeReason = ""
+	}
+	return result
+}

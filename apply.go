@@ -275,8 +275,8 @@ func deleteAuthFilesBatch(items []accountResult, password string, headers http.H
 	failedNames := map[string]string{}
 	if status == http.StatusMultiStatus || len(raw) > 0 {
 		var payload struct {
-			Status  string `json:"status"`
-			Failed  []struct {
+			Status string `json:"status"`
+			Failed []struct {
 				Name  string `json:"name"`
 				Error string `json:"error"`
 			} `json:"failed"`
@@ -359,6 +359,9 @@ func (e *inspectionEngine) collectCandidates(req applyRequest) ([]accountResult,
 	if force != "" && len(indexSet) == 0 && len(classSet) == 0 {
 		return nil, fmt.Errorf("force_action requires auth_indexes or classifications")
 	}
+	if req.Automatic && force == "delete" {
+		return nil, fmt.Errorf("automatic delete is forbidden")
+	}
 
 	candidates := make([]accountResult, 0)
 	for _, item := range e.results {
@@ -373,6 +376,9 @@ func (e *inspectionEngine) collectCandidates(req applyRequest) ([]accountResult,
 		}
 		// Recommended-only mode (执行建议操作)
 		if item.Action != "disable" && item.Action != "enable" && item.Action != "delete" {
+			continue
+		}
+		if req.Automatic && item.Action == "delete" {
 			continue
 		}
 		if len(actionSet) > 0 {
