@@ -24,7 +24,7 @@ type persistedSnapshot struct {
 }
 
 var (
-	storeMu         sync.Mutex
+	storeMu           sync.Mutex
 	storePathOverride string
 )
 
@@ -65,6 +65,10 @@ func loadPersistedSnapshot() (persistedSnapshot, error) {
 
 func savePersistedSnapshot(snap persistedSnapshot) error {
 	path := storeFilePath()
+	return savePersistedSnapshotTo(path, snap)
+}
+
+func savePersistedSnapshotTo(path string, snap persistedSnapshot) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

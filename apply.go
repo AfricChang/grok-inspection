@@ -410,6 +410,10 @@ func (e *inspectionEngine) startApply(req applyRequest, password string, headers
 		e.mu.Unlock()
 		return fmt.Errorf("busy")
 	}
+	if e.automatic && !req.Automatic {
+		e.mu.Unlock()
+		return fmt.Errorf("busy: automatic inspection sequence in progress")
+	}
 	candidates, errCollect := e.collectCandidates(req)
 	if errCollect != nil {
 		e.mu.Unlock()
@@ -423,6 +427,7 @@ func (e *inspectionEngine) startApply(req applyRequest, password string, headers
 		return fmt.Errorf("no recommended actions")
 	}
 	e.applying = true
+	e.applyDoneCh = make(chan struct{})
 	e.applyDone = 0
 	e.applyTotal = len(candidates)
 	e.applyCurrent = ""
@@ -465,6 +470,10 @@ func (e *inspectionEngine) startAction(req actionRequest, password string, heade
 		e.mu.Unlock()
 		return 0, "", fmt.Errorf("busy: bulk apply in progress")
 	}
+	if e.automatic {
+		e.mu.Unlock()
+		return 0, "", fmt.Errorf("busy: automatic inspection sequence in progress")
+	}
 	e.actionSeq++
 	seq := e.actionSeq
 	e.actionInFlight++
@@ -501,6 +510,7 @@ func (e *inspectionEngine) startAction(req actionRequest, password string, heade
 		}
 		// Success path already persisted inside setAuthDisabled/deleteAuthFile.
 		e.mu.Unlock()
+		automation.signalWake()
 	}()
 	return seq, action, nil
 }
@@ -510,8 +520,10 @@ func (e *inspectionEngine) runApply(candidates []accountResult, password string,
 		e.mu.Lock()
 		e.applying = false
 		e.applyCurrent = ""
+		e.closeApplyDoneLocked()
 		e.persistLocked()
 		e.mu.Unlock()
+		automation.signalWake()
 	}()
 
 	// Split deletes (host batch API) from enable/disable (host single-item only).

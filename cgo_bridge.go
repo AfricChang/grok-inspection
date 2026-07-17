@@ -90,7 +90,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
 	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
-	automation.start()
+	startPluginRuntime()
 	return 0
 }
 
@@ -127,9 +127,17 @@ func cliproxyPluginFree(ptr unsafe.Pointer, len C.size_t) {
 
 //export cliproxyPluginShutdown
 func cliproxyPluginShutdown() {
+	shutdownPluginRuntime()
+	C.clear_host_api()
+}
+
+func startPluginRuntime() {
+	automation.start()
+}
+
+func shutdownPluginRuntime() {
 	automation.shutdown()
 	engine.shutdown()
-	C.clear_host_api()
 }
 
 func callHost(method string, payload any) (json.RawMessage, error) {

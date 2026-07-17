@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,27 @@ func TestPersistRoundTrip(t *testing.T) {
 	}
 	if loaded.Results[0].Classification != "reauth" {
 		t.Fatalf("classification = %s", loaded.Results[0].Classification)
+	}
+}
+
+func TestEnginePersistSequenceDoesNotOverwriteNewerSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "results.json")
+	e := &inspectionEngine{}
+	newer := persistedSnapshot{Workers: 6, Results: []accountResult{{Name: "newer", Classification: "healthy"}}}
+	older := persistedSnapshot{Workers: 2, Results: []accountResult{{Name: "older", Classification: "probe_error"}}}
+	if err := e.savePersisted(path, 2, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.savePersisted(path, 1, older); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"name":"newer"`) || strings.Contains(string(raw), `"name":"older"`) {
+		t.Fatalf("persisted snapshot = %s", raw)
 	}
 }
 

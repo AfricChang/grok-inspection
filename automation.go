@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +27,7 @@ type automationRule struct {
 	ApplyRecommendations bool     `json:"apply_recommendations"`
 	LastRunAt            string   `json:"last_run_at,omitempty"`
 	NextRunAt            string   `json:"next_run_at,omitempty"`
+	SourceRuleIDs        []string `json:"-"`
 }
 
 type automationHistory struct {
@@ -47,33 +51,75 @@ type automationSnapshot struct {
 	Rules           []automationRule    `json:"rules"`
 	History         []automationHistory `json:"history,omitempty"`
 	RunningRuleID   string              `json:"running_rule_id,omitempty"`
+	RunningRuleIDs  []string            `json:"running_rule_ids,omitempty"`
 	RunningRuleName string              `json:"running_rule_name,omitempty"`
 	LastError       string              `json:"last_error,omitempty"`
+	PendingRuleID   string              `json:"pending_rule_id,omitempty"`
+	PendingRuleIDs  []string            `json:"pending_rule_ids,omitempty"`
+	PendingReason   string              `json:"pending_reason,omitempty"`
+	PendingSince    string              `json:"pending_since,omitempty"`
 	TimeZone        string              `json:"time_zone"`
 }
 
 type automationManager struct {
-	mu          sync.Mutex
-	rules       []automationRule
-	history     []automationHistory
-	runningID   string
-	runningName string
-	lastError   string
-	started     bool
-	stopCh      chan struct{}
-	wakeCh      chan struct{}
-	wg          sync.WaitGroup
+	mu            sync.Mutex
+	rules         []automationRule
+	history       []automationHistory
+	runningID     string
+	runningName   string
+	runningIDs    []string
+	pendingID     string
+	pendingIDs    []string
+	pendingAt     time.Time
+	pendingReason string
+	lastError     string
+	started       bool
+	stopCh        chan struct{}
+	wakeCh        chan struct{}
+	wg            sync.WaitGroup
 }
+
+var automationHistorySeq atomic.Uint64
 
 var automation = newAutomationManager()
 
 func newAutomationManager() *automationManager {
 	a := &automationManager{stopCh: make(chan struct{}), wakeCh: make(chan struct{}, 1)}
 	if rules, err := loadAutomationRules(); err == nil {
+		now := time.Now()
+		changed := false
+		for i := range rules {
+			normalized, errValidate := validateAutomationRule(rules[i])
+			if errValidate != nil {
+				normalized.Enabled = false
+				normalized.LastRunAt = rules[i].LastRunAt
+				rules[i] = normalized
+				if a.lastError == "" {
+					a.lastError = "自动巡检规则已停用: " + firstNonEmpty(rules[i].Name, rules[i].ID) + ": " + errValidate.Error()
+				}
+				changed = true
+			} else {
+				normalized.LastRunAt = rules[i].LastRunAt
+				rules[i] = normalized
+			}
+			if _, errParse := time.Parse(time.RFC3339, rules[i].LastRunAt); rules[i].LastRunAt == "" || errParse != nil {
+				rules[i].LastRunAt = now.Format(time.RFC3339)
+				changed = true
+			}
+		}
 		a.rules = rules
+		if changed {
+			if errSave := saveAutomationRules(rules); errSave != nil {
+				a.lastError = "初始化自动巡检时间失败: " + errSave.Error()
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		a.lastError = "加载自动巡检规则失败: " + err.Error()
 	}
 	if history, err := loadAutomationHistory(); err == nil {
 		a.history = history
+	} else if !errors.Is(err, os.ErrNotExist) {
+		a.lastError = "加载自动巡检历史失败: " + err.Error()
 	}
 	return a
 }
@@ -102,6 +148,16 @@ func (a *automationManager) shutdown() {
 	a.wg.Wait()
 }
 
+func (a *automationManager) signalWake() {
+	if a == nil {
+		return
+	}
+	select {
+	case a.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
 func (a *automationManager) loop() {
 	defer a.wg.Done()
 	ticker := time.NewTicker(30 * time.Second)
@@ -122,10 +178,18 @@ func (a *automationManager) snapshot(includeHistory bool) automationSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	rules := append([]automationRule(nil), a.rules...)
+	now := time.Now()
 	for i := range rules {
-		rules[i].NextRunAt = nextRuleRunAt(rules[i], time.Now())
+		rules[i].NextRunAt = nextRuleRunAt(rules[i], now)
+		if containsString(a.pendingIDs, rules[i].ID) {
+			rules[i].NextRunAt = ""
+		}
 	}
-	snap := automationSnapshot{Rules: rules, RunningRuleID: a.runningID, RunningRuleName: a.runningName, LastError: a.lastError, TimeZone: time.Now().Location().String()}
+	pendingSince := ""
+	if !a.pendingAt.IsZero() {
+		pendingSince = a.pendingAt.Format(time.RFC3339)
+	}
+	snap := automationSnapshot{Rules: rules, RunningRuleID: a.runningID, RunningRuleIDs: append([]string(nil), a.runningIDs...), RunningRuleName: a.runningName, LastError: a.lastError, PendingRuleID: a.pendingID, PendingRuleIDs: append([]string(nil), a.pendingIDs...), PendingReason: a.pendingReason, PendingSince: pendingSince, TimeZone: now.Location().String()}
 	if includeHistory {
 		snap.History = append([]automationHistory(nil), a.history...)
 	}
@@ -201,6 +265,7 @@ func (a *automationManager) upsertRule(rule automationRule) (automationRule, err
 		}
 	}
 	if !found {
+		rule.LastRunAt = time.Now().Format(time.RFC3339)
 		a.rules = append(a.rules, rule)
 	}
 	rules := append([]automationRule(nil), a.rules...)
@@ -208,13 +273,14 @@ func (a *automationManager) upsertRule(rule automationRule) (automationRule, err
 	if err := saveAutomationRules(rules); err != nil {
 		return rule, err
 	}
+	a.signalWake()
 	return rule, nil
 }
 
 func (a *automationManager) deleteRule(id string) error {
 	id = strings.TrimSpace(id)
 	a.mu.Lock()
-	if a.runningID == id {
+	if containsString(a.runningIDs, id) {
 		a.mu.Unlock()
 		return fmt.Errorf("规则正在执行")
 	}
@@ -231,7 +297,11 @@ func (a *automationManager) deleteRule(id string) error {
 	a.rules = kept
 	rules := append([]automationRule(nil), kept...)
 	a.mu.Unlock()
-	return saveAutomationRules(rules)
+	if err := saveAutomationRules(rules); err != nil {
+		return err
+	}
+	a.signalWake()
+	return nil
 }
 
 func (a *automationManager) runDue(now time.Time) {
@@ -240,17 +310,119 @@ func (a *automationManager) runDue(now time.Time) {
 		a.mu.Unlock()
 		return
 	}
-	var due *automationRule
+	pendingRules := a.rulesByIDsLocked(a.pendingIDs)
+	pendingAt := a.pendingAt
+	a.mu.Unlock()
+
+	if len(pendingRules) > 0 {
+		if pendingExpired(pendingRules, pendingAt, now) {
+			a.resetPendingSchedule(pendingRules, now, "等待空闲已超过一个执行间隔，本次补跑已跳过")
+			a.signalWake()
+			return
+		}
+		engine.mu.Lock()
+		busy := engine.running || engine.applying || engine.actionInFlight > 0 || engine.automatic
+		engine.mu.Unlock()
+		if busy {
+			return
+		}
+		_ = a.runRules(pendingRules, false)
+		return
+	}
+	if !pendingAt.IsZero() {
+		a.mu.Lock()
+		a.pendingID, a.pendingReason = "", ""
+		a.pendingIDs = nil
+		a.pendingAt = time.Time{}
+		a.mu.Unlock()
+	}
+
+	a.mu.Lock()
+	if a.runningID != "" {
+		a.mu.Unlock()
+		return
+	}
+	due := make([]automationRule, 0)
+	changed := false
 	for i := range a.rules {
+		if ruleMissedTooLong(a.rules[i], now) {
+			a.rules[i].LastRunAt = now.Format(time.RFC3339)
+			if containsString(a.pendingIDs, a.rules[i].ID) {
+				a.pendingID, a.pendingReason = "", ""
+				a.pendingIDs = nil
+				a.pendingAt = time.Time{}
+			}
+			changed = true
+			continue
+		}
 		if ruleDue(a.rules[i], now) {
-			copyRule := a.rules[i]
-			due = &copyRule
-			break
+			due = append(due, a.rules[i])
 		}
 	}
+	rules := append([]automationRule(nil), a.rules...)
 	a.mu.Unlock()
-	if due != nil {
-		_ = a.runRule(due.ID, false)
+	if changed {
+		if err := saveAutomationRules(rules); err != nil {
+			a.mu.Lock()
+			a.lastError = "保存自动巡检补跑状态失败: " + err.Error()
+			a.mu.Unlock()
+		}
+		a.signalWake()
+	}
+	if len(due) > 0 {
+		_ = a.runRules(due, false)
+	}
+}
+
+func (a *automationManager) rulesByIDsLocked(ids []string) []automationRule {
+	if len(ids) == 0 {
+		return nil
+	}
+	want := stringSet(ids)
+	rules := make([]automationRule, 0, len(ids))
+	for _, rule := range a.rules {
+		if _, ok := want[rule.ID]; ok {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
+}
+
+func pendingExpired(rules []automationRule, pendingAt, now time.Time) bool {
+	if pendingAt.IsZero() || len(rules) == 0 {
+		return false
+	}
+	maxWait := time.Duration(rules[0].IntervalMinutes) * time.Minute
+	for _, rule := range rules[1:] {
+		wait := time.Duration(rule.IntervalMinutes) * time.Minute
+		if wait < maxWait {
+			maxWait = wait
+		}
+	}
+	return now.Sub(pendingAt) > maxWait
+}
+
+func (a *automationManager) resetPendingSchedule(rules []automationRule, now time.Time, reason string) {
+	want := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		want[rule.ID] = struct{}{}
+	}
+	a.mu.Lock()
+	for i := range a.rules {
+		if _, ok := want[a.rules[i].ID]; ok {
+			a.rules[i].LastRunAt = now.Format(time.RFC3339)
+		}
+	}
+	a.pendingID, a.pendingReason = "", ""
+	a.pendingIDs = nil
+	a.pendingAt = time.Time{}
+	a.lastError = reason
+	rulesCopy := append([]automationRule(nil), a.rules...)
+	a.mu.Unlock()
+	if err := saveAutomationRules(rulesCopy); err != nil {
+		a.mu.Lock()
+		a.lastError = "保存自动巡检补跑状态失败: " + err.Error()
+		a.mu.Unlock()
 	}
 }
 
@@ -277,7 +449,29 @@ func (a *automationManager) runRule(id string, manual bool) error {
 		a.mu.Unlock()
 		return nil
 	}
+	a.mu.Unlock()
+	return a.runRules([]automationRule{rule}, manual)
+}
+
+func (a *automationManager) runRules(rules []automationRule, manual bool) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	if a.runningID != "" {
+		a.mu.Unlock()
+		return fmt.Errorf("已有自动巡检正在执行")
+	}
+	rule := mergeAutomationRules(rules)
+	if !manual && !rule.Enabled {
+		a.mu.Unlock()
+		return nil
+	}
 	a.runningID, a.runningName = rule.ID, rule.Name
+	a.runningIDs = append([]string(nil), rule.SourceRuleIDs...)
+	if len(a.runningIDs) == 0 {
+		a.runningIDs = []string{rule.ID}
+	}
 	a.mu.Unlock()
 	a.wg.Add(1)
 	go func() {
@@ -287,22 +481,59 @@ func (a *automationManager) runRule(id string, manual bool) error {
 	return nil
 }
 
+func mergeAutomationRules(rules []automationRule) automationRule {
+	merged := rules[0]
+	merged.Weekdays = nil
+	merged.WindowStart = ""
+	merged.WindowEnd = ""
+	merged.IntervalMinutes = 0
+	merged.LastRunAt = ""
+	merged.NextRunAt = ""
+	merged.SourceRuleIDs = make([]string, 0, len(rules))
+	seenScope := map[string]struct{}{}
+	merged.Scope = nil
+	names := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		merged.SourceRuleIDs = append(merged.SourceRuleIDs, rule.ID)
+		names = append(names, rule.Name)
+		if rule.Workers > merged.Workers {
+			merged.Workers = rule.Workers
+		}
+		merged.IncludeDisabled = merged.IncludeDisabled || rule.IncludeDisabled
+		// Merged runs only auto-apply when every source rule permits it. This is
+		// deliberately conservative: a no-apply rule must never inherit another
+		// simultaneously due rule's mutation policy.
+		merged.ApplyRecommendations = merged.ApplyRecommendations && rule.ApplyRecommendations
+		for _, scope := range rule.Scope {
+			seenScope[scope] = struct{}{}
+		}
+	}
+	for scope := range seenScope {
+		merged.Scope = append(merged.Scope, scope)
+	}
+	sort.Strings(merged.Scope)
+	if len(names) > 1 {
+		merged.Name = strings.Join(names, " + ")
+	}
+	return merged
+}
+
 func (a *automationManager) executeRule(rule automationRule) {
 	started := time.Now()
 	history := automationHistory{ID: fmt.Sprintf("run-%d", started.UnixNano()), RuleID: rule.ID, RuleName: rule.Name, Kind: "scheduled", StartedAt: started.Format(time.RFC3339), Status: "running"}
 	engine.mu.Lock()
 	if engine.running || engine.applying || engine.actionInFlight > 0 {
 		engine.mu.Unlock()
-		history.Status = "skipped"
-		history.Error = "当前有其他巡检或账号操作"
-		a.finishRule(rule.ID, started, history, false)
+		a.deferRule(rule, started, "当前有其他巡检或账号操作")
 		return
 	}
+	results := append([]accountResult(nil), engine.results...)
+	engine.mu.Unlock()
 	want := stringSet(rule.Scope)
 	ids := make([]string, 0)
 	classes := map[string]struct{}{}
 	now := time.Now()
-	for _, item := range engine.results {
+	for _, item := range results {
 		if item.Classification == "healthy" || item.Classification == "reauth" || item.AutoInspectExcluded {
 			continue
 		}
@@ -324,11 +555,10 @@ func (a *automationManager) executeRule(rule automationRule) {
 			classes["other"] = struct{}{}
 		}
 	}
-	engine.mu.Unlock()
 	if len(ids) == 0 {
 		history.Status = "success"
 		history.FinishedAt = time.Now().Format(time.RFC3339)
-		a.finishRule(rule.ID, started, history, true)
+		a.finishRule(rule, started, history, true)
 		return
 	}
 	classifications := make([]string, 0, len(classes))
@@ -342,19 +572,33 @@ func (a *automationManager) executeRule(rule automationRule) {
 		Automatic: true, AutomaticRuleID: rule.ID, AutomaticRuleName: rule.Name,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "running") || strings.Contains(err.Error(), "busy") {
+			a.deferRule(rule, started, "当前有其他巡检或账号操作")
+			return
+		}
 		history.Status, history.Error = "failed", err.Error()
-		a.finishRule(rule.ID, started, history, true)
+		a.finishRule(rule, started, history, true)
 		return
 	}
-	for engine.snapshot(false).Running {
-		time.Sleep(200 * time.Millisecond)
+	select {
+	case <-engine.runCompletion():
+	case <-a.stopCh:
+		history.Status = "stopped"
+		history.Message = "插件卸载，自动巡检等待结束"
+		a.finishRule(rule, started, history, false)
+		return
 	}
 	history.Inspected = len(ids)
 	if rule.ApplyRecommendations && !engine.snapshot(false).Stopped {
 		err = engine.startApply(applyRequest{AuthIndexes: ids, Actions: []string{"enable", "disable"}, Automatic: true}, resolveManagementPassword(nil), nil)
 		if err == nil {
-			for engine.snapshot(false).Applying {
-				time.Sleep(200 * time.Millisecond)
+			select {
+			case <-engine.applyCompletion():
+			case <-a.stopCh:
+				history.Status = "stopped"
+				history.Message = "插件卸载，自动操作等待结束"
+				a.finishRule(rule, started, history, false)
+				return
 			}
 			snap := engine.snapshot(false)
 			history.Applied = snap.ApplyDone
@@ -369,19 +613,47 @@ func (a *automationManager) executeRule(rule automationRule) {
 	if history.Error != "" {
 		history.Status = "partial"
 	}
-	a.finishRule(rule.ID, started, history, true)
+	a.finishRule(rule, started, history, true)
 }
 
-func (a *automationManager) finishRule(ruleID string, started time.Time, history automationHistory, updateLastRun bool) {
-	engine.clearAutomationContext(ruleID)
+func (a *automationManager) deferRule(rule automationRule, started time.Time, reason string) {
+	a.mu.Lock()
+	if a.pendingID != rule.ID {
+		a.pendingAt = started
+	}
+	a.pendingID = rule.ID
+	a.pendingIDs = append([]string(nil), rule.SourceRuleIDs...)
+	if len(a.pendingIDs) == 0 {
+		a.pendingIDs = []string{rule.ID}
+	}
+	a.pendingReason = reason + "，将在空闲后补跑"
+	a.runningID, a.runningName = "", ""
+	a.runningIDs = nil
+	a.lastError = a.pendingReason
+	a.mu.Unlock()
+}
+
+func (a *automationManager) finishRule(rule automationRule, started time.Time, history automationHistory, updateLastRun bool) {
+	engine.clearAutomationContext(rule.ID)
+	completionIDs := rule.SourceRuleIDs
+	if len(completionIDs) == 0 {
+		completionIDs = []string{rule.ID}
+	}
+	completed := stringSet(completionIDs)
 	history.FinishedAt = time.Now().Format(time.RFC3339)
 	a.mu.Lock()
 	for i := range a.rules {
-		if updateLastRun && a.rules[i].ID == ruleID {
+		if _, ok := completed[a.rules[i].ID]; updateLastRun && ok {
 			a.rules[i].LastRunAt = started.Format(time.RFC3339)
 		}
 	}
 	a.runningID, a.runningName = "", ""
+	a.runningIDs = nil
+	if _, ok := completed[a.pendingID]; ok {
+		a.pendingID, a.pendingReason = "", ""
+		a.pendingIDs = nil
+		a.pendingAt = time.Time{}
+	}
 	a.lastError = history.Error
 	a.history = append([]automationHistory{history}, a.history...)
 	if len(a.history) > maxAutomationHistory {
@@ -390,8 +662,19 @@ func (a *automationManager) finishRule(ruleID string, started time.Time, history
 	rules := append([]automationRule(nil), a.rules...)
 	historyCopy := append([]automationHistory(nil), a.history...)
 	a.mu.Unlock()
-	_ = saveAutomationRules(rules)
-	_ = saveAutomationHistory(historyCopy)
+	var saveErrors []string
+	if err := saveAutomationRules(rules); err != nil {
+		saveErrors = append(saveErrors, "保存规则失败: "+err.Error())
+	}
+	if err := saveAutomationHistory(historyCopy); err != nil {
+		saveErrors = append(saveErrors, "保存历史失败: "+err.Error())
+	}
+	if len(saveErrors) > 0 {
+		a.mu.Lock()
+		a.lastError = strings.Join(saveErrors, "; ")
+		a.mu.Unlock()
+	}
+	a.signalWake()
 }
 
 func (a *automationManager) recordUsageEvent(result accountResult, actionAttempted bool, errText string) {
@@ -413,7 +696,7 @@ func (a *automationManager) recordUsageEvent(result accountResult, actionAttempt
 	} else if result.Action == "disable" {
 		message += "，准备自动禁用"
 	}
-	h := automationHistory{ID: fmt.Sprintf("usage-%d", now.UnixNano()), Kind: "usage", StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), Status: status, Account: firstNonEmpty(result.Email, result.Name, result.AuthIndex), Classification: result.Classification, HTTPStatus: result.HTTPStatus, Error: errText, Message: message}
+	h := automationHistory{ID: fmt.Sprintf("usage-%d-%d", now.UnixNano(), automationHistorySeq.Add(1)), Kind: "usage", StartedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), Status: status, Account: firstNonEmpty(result.Email, result.Name, result.AuthIndex), Classification: result.Classification, HTTPStatus: result.HTTPStatus, Error: errText, Message: message}
 	a.mu.Lock()
 	a.history = append([]automationHistory{h}, a.history...)
 	if len(a.history) > maxAutomationHistory {
@@ -421,7 +704,20 @@ func (a *automationManager) recordUsageEvent(result accountResult, actionAttempt
 	}
 	history := append([]automationHistory(nil), a.history...)
 	a.mu.Unlock()
-	_ = saveAutomationHistory(history)
+	if err := saveAutomationHistory(history); err != nil {
+		a.mu.Lock()
+		a.lastError = "保存自动巡检历史失败: " + err.Error()
+		a.mu.Unlock()
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func automaticClassificationLabel(classification string) string {
@@ -480,21 +776,48 @@ func ruleDue(rule automationRule, now time.Time) bool {
 		return false
 	}
 	if rule.LastRunAt == "" {
-		return true
+		return false
 	}
 	last, err := time.Parse(time.RFC3339, rule.LastRunAt)
-	return err != nil || now.Sub(last) >= time.Duration(rule.IntervalMinutes)*time.Minute
+	return err == nil && now.Sub(last) >= time.Duration(rule.IntervalMinutes)*time.Minute
+}
+
+func ruleMissedTooLong(rule automationRule, now time.Time) bool {
+	if !rule.Enabled || !ruleWindowContains(rule, now) || rule.LastRunAt == "" {
+		return false
+	}
+	last, err := time.Parse(time.RFC3339, rule.LastRunAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(last) > 2*time.Duration(rule.IntervalMinutes)*time.Minute
 }
 
 func nextRuleRunAt(rule automationRule, now time.Time) string {
 	if !rule.Enabled {
 		return ""
 	}
-	if ruleDue(rule, now) {
-		return now.Format(time.RFC3339)
+	last, err := time.Parse(time.RFC3339, rule.LastRunAt)
+	if err != nil {
+		return ""
 	}
-	if last, err := time.Parse(time.RFC3339, rule.LastRunAt); err == nil {
-		return last.Add(time.Duration(rule.IntervalMinutes) * time.Minute).Format(time.RFC3339)
+	dueAt := last.Add(time.Duration(rule.IntervalMinutes) * time.Minute)
+	if dueAt.Before(now) {
+		dueAt = now
+	}
+	if ruleWindowContains(rule, dueAt) {
+		return dueAt.Format(time.RFC3339)
+	}
+	// Intervals may end outside the configured window or on a disabled weekday.
+	// Search minute boundaries for the next valid slot; two weeks covers the
+	// maximum seven-day interval plus a full weekday cycle.
+	candidate := dueAt.Truncate(time.Minute).Add(time.Minute)
+	limit := candidate.Add(14 * 24 * time.Hour)
+	for !candidate.After(limit) {
+		if ruleWindowContains(rule, candidate) {
+			return candidate.Format(time.RFC3339)
+		}
+		candidate = candidate.Add(time.Minute)
 	}
 	return ""
 }

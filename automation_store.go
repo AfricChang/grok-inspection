@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -27,6 +28,9 @@ func loadAutomationRules() ([]automationRule, error) {
 	var state automationDiskState
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return nil, err
+	}
+	if state.Version != automationStoreVersion {
+		return nil, fmt.Errorf("unsupported automation store version %d", state.Version)
 	}
 	return state.Rules, nil
 }

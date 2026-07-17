@@ -133,6 +133,12 @@ type authListResponse struct {
 type inspectionEngine struct {
 	mu                sync.Mutex
 	runWG             sync.WaitGroup
+	persistWG         sync.WaitGroup
+	persistMu         sync.Mutex
+	persistSeq        uint64
+	persistSavedSeq   uint64
+	runDoneCh         chan struct{}
+	applyDoneCh       chan struct{}
 	running           bool
 	stopped           bool
 	applying          bool
@@ -229,25 +235,81 @@ func (e *inspectionEngine) copyPersistedLocked() persistedSnapshot {
 	return snap
 }
 
+func (e *inspectionEngine) persistedWriteLocked() (string, uint64, persistedSnapshot) {
+	e.persistSeq++
+	return storeFilePath(), e.persistSeq, e.copyPersistedLocked()
+}
+
+func (e *inspectionEngine) savePersisted(path string, seq uint64, snap persistedSnapshot) error {
+	e.persistMu.Lock()
+	defer e.persistMu.Unlock()
+	if seq < e.persistSavedSeq {
+		return nil
+	}
+	if err := savePersistedSnapshotTo(path, snap); err != nil {
+		return err
+	}
+	e.persistSavedSeq = seq
+	return nil
+}
+
 // persistLocked copies under the caller lock, then writes asynchronously so
 // status/snapshot callers are not blocked on disk I/O for large result lists.
 func (e *inspectionEngine) persistLocked() {
-	snap := e.copyPersistedLocked()
-	go func(s persistedSnapshot) {
-		_ = savePersistedSnapshot(s)
-	}(snap)
+	path, seq, snap := e.persistedWriteLocked()
+	e.persistWG.Add(1)
+	go func(path string, seq uint64, s persistedSnapshot) {
+		defer e.persistWG.Done()
+		_ = e.savePersisted(path, seq, s)
+	}(path, seq, snap)
 }
 
 // persist copies under lock and writes outside the critical section.
 func (e *inspectionEngine) persist() {
 	e.mu.Lock()
-	snap := e.copyPersistedLocked()
+	path, seq, snap := e.persistedWriteLocked()
 	e.mu.Unlock()
-	_ = savePersistedSnapshot(snap)
+	_ = e.savePersisted(path, seq, snap)
 }
 
 func (e *inspectionEngine) bumpResultsLocked() {
 	e.resultsGen++
+}
+
+func (e *inspectionEngine) closeRunDoneLocked() {
+	if e.runDoneCh != nil {
+		close(e.runDoneCh)
+		e.runDoneCh = nil
+	}
+}
+
+func (e *inspectionEngine) closeApplyDoneLocked() {
+	if e.applyDoneCh != nil {
+		close(e.applyDoneCh)
+		e.applyDoneCh = nil
+	}
+}
+
+func (e *inspectionEngine) runCompletion() <-chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.runDoneCh == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return e.runDoneCh
+}
+
+func (e *inspectionEngine) applyCompletion() <-chan struct{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.applyDoneCh == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return e.applyDoneCh
 }
 
 func summarizeResults(results []accountResult) map[string]int {
@@ -355,6 +417,10 @@ func (e *inspectionEngine) start(req startRequest) error {
 		e.mu.Unlock()
 		return fmt.Errorf("inspection already running")
 	}
+	if e.automatic && !req.Automatic {
+		e.mu.Unlock()
+		return fmt.Errorf("busy: automatic inspection sequence in progress")
+	}
 	if e.actionInFlight > 0 {
 		e.mu.Unlock()
 		return fmt.Errorf("busy: row action in progress")
@@ -387,6 +453,7 @@ func (e *inspectionEngine) start(req startRequest) error {
 		includeDisabled = false
 	}
 	e.running = true
+	e.runDoneCh = make(chan struct{})
 	e.stopped = false
 	e.applying = false
 	e.runTargets = nil
@@ -449,9 +516,10 @@ func (e *inspectionEngine) stop() {
 		return
 	}
 	e.abortRunLocked()
-	snap := e.copyPersistedLocked()
+	path, seq, snap := e.persistedWriteLocked()
 	e.mu.Unlock()
-	_ = savePersistedSnapshot(snap)
+	_ = e.savePersisted(path, seq, snap)
+	automation.signalWake()
 }
 
 // abortRunLocked finalizes a running job under e.mu.
@@ -486,6 +554,7 @@ func (e *inspectionEngine) abortRunLocked() {
 	e.finishedAt = time.Now()
 	e.runTargets = nil
 	e.bumpResultsLocked()
+	e.closeRunDoneLocked()
 	// Invalidate in-flight writers from this run.
 	e.runID++
 }
@@ -496,6 +565,7 @@ func (e *inspectionEngine) shutdown() {
 	e.runID++
 	e.mu.Unlock()
 	e.runWG.Wait()
+	e.persistWG.Wait()
 }
 
 func (e *inspectionEngine) isStopped(runID uint64) bool {
@@ -551,10 +621,12 @@ func (e *inspectionEngine) finish(runID uint64) {
 	}
 	e.running = false
 	e.finishedAt = time.Now()
-	snap := e.copyPersistedLocked()
+	e.closeRunDoneLocked()
+	path, seq, snap := e.persistedWriteLocked()
 	e.mu.Unlock()
 	// Final flush is synchronous so the last results survive process restart.
-	_ = savePersistedSnapshot(snap)
+	_ = e.savePersisted(path, seq, snap)
+	automation.signalWake()
 }
 
 // knownResultKeys builds skip-keys for incremental inspect.
@@ -658,9 +730,9 @@ func (e *inspectionEngine) run(runID uint64, workers int, includeDisabled, onlyD
 		e.runClassifyScoped = classifyScoped
 		if e.stopped {
 			e.abortRunLocked()
-			snap := e.copyPersistedLocked()
+			path, seq, snap := e.persistedWriteLocked()
 			e.mu.Unlock()
-			_ = savePersistedSnapshot(snap)
+			_ = e.savePersisted(path, seq, snap)
 			return
 		}
 	}

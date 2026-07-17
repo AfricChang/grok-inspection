@@ -808,14 +808,17 @@ func renderUIPage(pluginID string) []byte {
     const rules = data.rules || [];
     $('autoStatus').textContent = data.running_rule_name
       ? ('正在执行：' + data.running_rule_name)
-      : ('时区：' + (data.time_zone || '本机'));
+      : (data.pending_rule_id
+        ? ((data.pending_reason || '任务已到期，等待 CPA 空闲后补跑') + (data.pending_since ? ' · 自 ' + data.pending_since : ''))
+        : ('时区：' + (data.time_zone || '本机')));
     $('autoRules').innerHTML = rules.length ? rules.map((rule) => {
-      const running = data.running_rule_id === rule.id;
+      const running = (data.running_rule_ids || [data.running_rule_id]).includes(rule.id);
+      const pending = (data.pending_rule_ids || [data.pending_rule_id]).includes(rule.id);
       return '<tr><td>' + escapeHtml(rule.name) + '</td>' +
         '<td>' + escapeHtml(rule.window_start + '～' + rule.window_end + ' / ' + rule.interval_minutes + ' 分钟') + '</td>' +
         '<td>' + escapeHtml(automationScopeLabels(rule.scope)) + '</td>' +
         '<td>' + escapeHtml(rule.next_run_at || '-') + '</td>' +
-        '<td>' + (running ? '执行中' : (rule.enabled ? '已启用' : '已停用')) + '</td>' +
+        '<td>' + (running ? '执行中' : (pending ? '等待空闲' : (rule.enabled ? '已启用' : '已停用'))) + '</td>' +
         '<td><button data-auto="edit" data-id="' + escapeHtml(rule.id) + '">编辑</button> ' +
         '<button data-auto="run" data-id="' + escapeHtml(rule.id) + '"' + (running?' disabled':'') + '>立即执行</button> ' +
         '<button data-auto="delete" data-id="' + escapeHtml(rule.id) + '" class="danger"' + (running?' disabled':'') + '>删除规则</button></td></tr>';
@@ -842,7 +845,7 @@ func renderUIPage(pluginID string) []byte {
       };
     });
     const history = data.history || [];
-    const statusLabels = { detected:'已检测', applied:'已执行', failed:'失败', success:'成功', partial:'部分完成', skipped:'已跳过', running:'执行中' };
+    const statusLabels = { detected:'已检测', applied:'已执行', failed:'失败', success:'成功', partial:'部分完成', skipped:'已跳过', stopped:'已停止', running:'执行中' };
     $('autoHistory').textContent = history.length
       ? ('最近记录：\n' + history.slice(0, 8).map((item) => {
           const target = item.rule_name || item.account || '-';
@@ -884,7 +887,7 @@ func renderUIPage(pluginID string) []byte {
     };
     try {
       await api('/automation/rules', { method:'POST', body:JSON.stringify(rule) });
-      showOk('自动巡检规则已保存');
+      showOk('自动巡检规则已保存；首次自动执行将在一个配置间隔后触发，也可点击“立即执行”');
       resetAutomationForm();
       await loadAutomation(true);
     } catch (e) { showErr(String(e.message || e)); }
