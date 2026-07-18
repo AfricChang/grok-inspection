@@ -28,27 +28,31 @@ type automationRule struct {
 	LastRunAt            string   `json:"last_run_at,omitempty"`
 	NextRunAt            string   `json:"next_run_at,omitempty"`
 	SourceRuleIDs        []string `json:"-"`
+	Manual               bool     `json:"-"`
 }
 
 type automationHistory struct {
-	ID             string         `json:"id"`
-	RuleID         string         `json:"rule_id,omitempty"`
-	RuleName       string         `json:"rule_name,omitempty"`
-	Kind           string         `json:"kind"`
-	StartedAt      string         `json:"started_at"`
-	FinishedAt     string         `json:"finished_at,omitempty"`
-	Status         string         `json:"status"`
-	Inspected      int            `json:"inspected,omitempty"`
-	Applied        int            `json:"applied,omitempty"`
-	ClassCounts    map[string]int `json:"class_counts,omitempty"`
-	AutoEnabled    int            `json:"auto_enabled,omitempty"`
-	AutoDisabled   int            `json:"auto_disabled,omitempty"`
-	AutoFailed     int            `json:"auto_failed,omitempty"`
-	Account        string         `json:"account,omitempty"`
-	Classification string         `json:"classification,omitempty"`
-	HTTPStatus     int            `json:"http_status,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	Message        string         `json:"message,omitempty"`
+	ID              string         `json:"id"`
+	RuleID          string         `json:"rule_id,omitempty"`
+	RuleName        string         `json:"rule_name,omitempty"`
+	Kind            string         `json:"kind"`
+	StartedAt       string         `json:"started_at"`
+	FinishedAt      string         `json:"finished_at,omitempty"`
+	Status          string         `json:"status"`
+	Inspected       int            `json:"inspected,omitempty"`
+	Applied         int            `json:"applied,omitempty"`
+	ClassCounts     map[string]int `json:"class_counts,omitempty"`
+	AutoEnabled     int            `json:"auto_enabled,omitempty"`
+	AutoDisabled    int            `json:"auto_disabled,omitempty"`
+	AutoFailed      int            `json:"auto_failed,omitempty"`
+	Matched         int            `json:"matched,omitempty"`
+	CooldownSkipped int            `json:"cooldown_skipped,omitempty"`
+	NextEligibleAt  string         `json:"next_eligible_at,omitempty"`
+	Account         string         `json:"account,omitempty"`
+	Classification  string         `json:"classification,omitempty"`
+	HTTPStatus      int            `json:"http_status,omitempty"`
+	Error           string         `json:"error,omitempty"`
+	Message         string         `json:"message,omitempty"`
 }
 
 type automationSnapshot struct {
@@ -467,6 +471,7 @@ func (a *automationManager) runRules(rules []automationRule, manual bool) error 
 		return fmt.Errorf("已有自动巡检正在执行")
 	}
 	rule := mergeAutomationRules(rules)
+	rule.Manual = manual
 	if !manual && !rule.Enabled {
 		a.mu.Unlock()
 		return nil
@@ -524,7 +529,11 @@ func mergeAutomationRules(rules []automationRule) automationRule {
 
 func (a *automationManager) executeRule(rule automationRule) {
 	started := time.Now()
-	history := automationHistory{ID: fmt.Sprintf("run-%d", started.UnixNano()), RuleID: rule.ID, RuleName: rule.Name, Kind: "scheduled", StartedAt: started.Format(time.RFC3339), Status: "running"}
+	kind := "scheduled"
+	if rule.Manual {
+		kind = "manual"
+	}
+	history := automationHistory{ID: fmt.Sprintf("run-%d", started.UnixNano()), RuleID: rule.ID, RuleName: rule.Name, Kind: kind, StartedAt: started.Format(time.RFC3339), Status: "running"}
 	engine.mu.Lock()
 	if engine.running || engine.applying || engine.actionInFlight > 0 {
 		engine.mu.Unlock()
@@ -537,6 +546,7 @@ func (a *automationManager) executeRule(rule automationRule) {
 	ids := make([]string, 0)
 	classes := map[string]struct{}{}
 	now := time.Now()
+	var nextEligible time.Time
 	for _, item := range results {
 		if item.Classification == "healthy" || item.Classification == "reauth" || item.AutoInspectExcluded {
 			continue
@@ -545,7 +555,15 @@ func (a *automationManager) executeRule(rule automationRule) {
 		if _, all := want["all"]; all {
 			matches = true
 		}
-		if !matches || !automaticResultDue(item, now) {
+		if !matches {
+			continue
+		}
+		history.Matched++
+		if !rule.Manual && !automaticResultDue(item, now) {
+			history.CooldownSkipped++
+			if next, errParse := time.Parse(time.RFC3339, item.NextInspectAt); errParse == nil && (nextEligible.IsZero() || next.Before(nextEligible)) {
+				nextEligible = next
+			}
 			continue
 		}
 		id := firstNonEmpty(item.AuthIndex, item.FileName, item.Name)
@@ -558,6 +576,9 @@ func (a *automationManager) executeRule(rule automationRule) {
 		} else {
 			classes["other"] = struct{}{}
 		}
+	}
+	if !nextEligible.IsZero() {
+		history.NextEligibleAt = nextEligible.Format(time.RFC3339)
 	}
 	if len(ids) == 0 {
 		history.Status = "success"
@@ -660,9 +681,19 @@ func formatAutomationRunSummary(history automationHistory) string {
 	if counts == nil {
 		counts = emptyAutomationClassCounts()
 	}
+	prefix := fmt.Sprintf("巡检 %d 个", history.Inspected)
+	if history.Matched == 0 {
+		prefix += "（当前规则范围没有问题账号）"
+	} else if history.CooldownSkipped > 0 {
+		prefix += fmt.Sprintf("（匹配 %d 个，冷却跳过 %d 个", history.Matched, history.CooldownSkipped)
+		if history.NextEligibleAt != "" {
+			prefix += "，最早可巡检 " + history.NextEligibleAt
+		}
+		prefix += "）"
+	}
 	return fmt.Sprintf(
-		"巡检 %d 个：健康 %d、权限被拒 %d、额度用尽 %d、需重登 %d、异常 %d；自动禁用 %d、自动启用 %d、失败 %d",
-		history.Inspected,
+		"%s：健康 %d、权限被拒 %d、额度用尽 %d、需重登 %d、异常 %d；自动禁用 %d、自动启用 %d、失败 %d",
+		prefix,
 		counts["healthy"], counts["permission_denied"], counts["quota_exhausted"], counts["reauth"], counts["other"],
 		history.AutoDisabled, history.AutoEnabled, history.AutoFailed,
 	)
@@ -695,7 +726,7 @@ func (a *automationManager) finishRule(rule automationRule, started time.Time, h
 	history.FinishedAt = time.Now().Format(time.RFC3339)
 	a.mu.Lock()
 	for i := range a.rules {
-		if _, ok := completed[a.rules[i].ID]; updateLastRun && ok {
+		if _, ok := completed[a.rules[i].ID]; updateLastRun && !rule.Manual && ok {
 			a.rules[i].LastRunAt = started.Format(time.RFC3339)
 		}
 	}

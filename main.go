@@ -12,7 +12,7 @@ import (
 
 const (
 	pluginName            = "grok-inspection"
-	pluginVersion         = "0.2.4"
+	pluginVersion         = "0.2.5"
 	resourceContentType   = "text/html; charset=utf-8"
 	jsonContentType       = "application/json; charset=utf-8"
 	managementRoutePrefix = "/plugins/" + pluginName

@@ -321,6 +321,7 @@ func TestExecuteRuleWaitsForEngineCompletionNotification(t *testing.T) {
 func TestFormatAutomationRunSummaryIncludesCategoriesAndActions(t *testing.T) {
 	history := automationHistory{
 		Inspected: 12,
+		Matched:   12,
 		ClassCounts: map[string]int{
 			"healthy": 3, "permission_denied": 5, "quota_exhausted": 2, "reauth": 0, "other": 2,
 		},
@@ -332,6 +333,36 @@ func TestFormatAutomationRunSummaryIncludesCategoriesAndActions(t *testing.T) {
 	want := "巡检 12 个：健康 3、权限被拒 5、额度用尽 2、需重登 0、异常 2；自动禁用 7、自动启用 1、失败 2"
 	if got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestManualRunBypassesCooldownWithoutChangingSchedule(t *testing.T) {
+	setStoreFilePathForTest(filepath.Join(t.TempDir(), "results.json"))
+	oldEngine := engine
+	oldAutomation := automation
+	lastRun := time.Now().Add(-30 * time.Minute).Format(time.RFC3339)
+	nextEligible := time.Now().Add(time.Hour).Truncate(time.Second).Format(time.RFC3339)
+	engine = &inspectionEngine{workers: defaultWorkers, results: []accountResult{{AuthIndex: "quota", Name: "quota", Classification: "quota_exhausted", NextInspectAt: nextEligible}}}
+	rule := automationRule{ID: "manual", Name: "manual", Enabled: true, Scope: []string{"quota_exhausted"}, Workers: 2, LastRunAt: lastRun, Manual: true}
+	a := &automationManager{rules: []automationRule{rule}, runningID: rule.ID, runningIDs: []string{rule.ID}, wakeCh: make(chan struct{}, 1), stopCh: make(chan struct{})}
+	automation = a
+	t.Cleanup(func() {
+		engine.runWG.Wait()
+		engine.persistWG.Wait()
+		engine = oldEngine
+		automation = oldAutomation
+		setStoreFilePathForTest("")
+	})
+	a.executeRule(rule)
+	snap := a.snapshot(true)
+	if snap.Rules[0].LastRunAt != lastRun {
+		t.Fatalf("manual run changed last_run_at: %s -> %s", lastRun, snap.Rules[0].LastRunAt)
+	}
+	if len(snap.History) != 1 || snap.History[0].Kind != "manual" || snap.History[0].Inspected != 1 || snap.History[0].CooldownSkipped != 0 {
+		t.Fatalf("manual bypass history = %+v", snap.History)
+	}
+	if !strings.Contains(snap.History[0].Message, "巡检 1 个") || strings.Contains(snap.History[0].Message, "冷却跳过") {
+		t.Fatalf("manual bypass message = %q", snap.History[0].Message)
 	}
 }
 
